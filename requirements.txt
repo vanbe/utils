@@ -1,0 +1,29 @@
+# Audio utilities (actions/audio_utils)
+pydub
+faster-whisper
+pyannote.audio
+torch
+torchaudio
+
+# Picture utilities (actions/picture_utils)
+Pillow>=10.0.0
+rawpy==0.25.1
+imageio==2.31.2
+
+# Document utilities (actions/document_utils)
+PyPDF2
+python-pptx
+reportlab
+PyMuPDF
+pypandoc
+# md_to_audio.py
+kokoro
+soundfile
+numpy
+
+# Shared
+python-dotenv
+
+# MinerU PDF → Markdown (actions/document_utils/pdf_mineru_to_md.py)
+# Heavy install (PyTorch + ~3 GB of model weights on first use).
+mineru[core]
