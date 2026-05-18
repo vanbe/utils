@@ -310,7 +310,7 @@ def transcribe_audio(input_file, language='en', no_speaker=False, output_format=
                 "pyannote/speaker-diarization-3.1", token=hf_token)
             pipeline.to(torch.device(device))
             seg_batch = 64 if device == "cuda" else 8
-            emb_batch = 64 if device == "cuda" else 8
+            emb_batch = 32 if device == "cuda" else 8  # 64 OOMs on 6GB with pyannote 4.x fbank
             for attr, val in [("segmentation_batch_size", seg_batch),
                                ("embedding_batch_size",    emb_batch)]:
                 if hasattr(pipeline, attr):
@@ -332,13 +332,14 @@ def transcribe_audio(input_file, language='en', no_speaker=False, output_format=
             t = _step_block(step_n, "Diarize")
 
             # Pre-load audio tensor — avoids pyannote re-reading the file each sweep
+            # torchaudio.load is broken in 2.11 (requires torchcodec); use soundfile.
             audio_input = processing_file
             try:
-                import torchaudio
-                waveform, sample_rate = torchaudio.load(processing_file)
-                audio_input = {"waveform": waveform, "sample_rate": sample_rate}
+                import soundfile as _sf
+                _data, _sr = _sf.read(processing_file, dtype="float32", always_2d=True)
+                audio_input = {"waveform": torch.from_numpy(_data.T), "sample_rate": _sr}
             except Exception:
-                pass  # fall back to file path silently
+                pass  # fall back to file path on any error
 
             diarize_kwargs = {}
             if max_speakers > 0:

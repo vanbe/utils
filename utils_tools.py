@@ -16,6 +16,7 @@ import tty
 import termios
 import select as _sel_mod
 import time
+import glob
 from datetime import datetime
 
 # ---------------------------------------------------------------------------
@@ -460,8 +461,27 @@ def pick_file(start_dir: str, title: str,
 # Script runners
 # ---------------------------------------------------------------------------
 
+def _gpu_env() -> dict:
+    """Return os.environ with all nvidia/<pkg>/lib dirs prepended to LD_LIBRARY_PATH.
+
+    glibc caches LD_LIBRARY_PATH at process startup, so the fix must be applied
+    before the child Python process starts — not inside it.  This is needed for
+    cu13 wheels (torch 2.11+) whose libnvrtc-builtins.so.13.0 lives under
+    nvidia/cu13/lib/ which PyTorch's loader doesn't search by default.
+    """
+    import site as _site
+    nv_dirs = sorted(glob.glob(
+        os.path.join(_site.getsitepackages()[0], 'nvidia', '*', 'lib')
+    ))
+    env = os.environ.copy()
+    if nv_dirs:
+        existing = env.get('LD_LIBRARY_PATH', '')
+        env['LD_LIBRARY_PATH'] = ':'.join(nv_dirs + ([existing] if existing else []))
+    return env
+
+
 def _py(*args) -> int:
-    return subprocess.run([_PYTHON, *args]).returncode
+    return subprocess.run([_PYTHON, *args], env=_gpu_env()).returncode
 
 
 def _cmd(*args) -> int:

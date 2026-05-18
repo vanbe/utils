@@ -1,7 +1,7 @@
 # Audio utilities (actions/audio_utils)
 pydub
 faster-whisper
-pyannote.audio
+pyannote.audio==4.0.4  # torchcodec ABI broken; io.py patched to use soundfile instead
 torch
 torchaudio
 
