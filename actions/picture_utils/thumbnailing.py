@@ -21,6 +21,9 @@ Usage
   --no-recursive          Top-level folder only
   --overwrite             Regenerate existing thumbnails
   --num-cores     N       Worker threads (default: auto from .env / cpu_count)
+  --mirror                Delete output thumbnails whose source is gone (needs -o)
+  --dry-run               Preview orphan deletions only; no generation, no deletion
+  --allow-empty           Permit mirror pruning even when the source is empty
 """
 
 import os
@@ -84,7 +87,7 @@ def get_num_cores() -> int:
 # ---------------------------------------------------------------------------
 
 VIDEO_EXTS = frozenset({'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm'})
-RAW_EXTS   = frozenset({'.arw', '.cr2', '.cr3', '.dng', '.nef', '.orf', '.rw2', '.raw'})
+RAW_EXTS   = frozenset({'.arw', '.cr2', '.cr3', '.dng', '.nef', '.orf', '.pef', '.rw2', '.raw'})
 IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.webp'})
 MEDIA_EXTS = IMAGE_EXTS | RAW_EXTS | VIDEO_EXTS
 
@@ -476,6 +479,61 @@ def _process_one(task: tuple) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Mirror / orphan pruning
+# ---------------------------------------------------------------------------
+
+def _prune_orphans(out_root: Path, expected: set, dry_run: bool) -> tuple:
+    """Delete files under out_root that are not in the expected set, then remove
+    empty directories (deepest first). Returns (files_deleted, dirs_removed).
+
+    In dry-run mode nothing is touched; deletions are only logged. Note that
+    empty-dir detection in dry-run only catches dirs that are *already* empty,
+    since the would-be-deleted files still exist."""
+    files_deleted = 0
+    dirs_removed = 0
+
+    for f in out_root.rglob('*'):
+        try:
+            if not f.is_file():
+                continue
+            if 'thumbnails' in f.relative_to(out_root).parts:
+                continue  # never touch nested thumbnails/ dirs (mirrors source skip rule)
+            if f.resolve() in expected:
+                continue
+        except Exception:
+            continue
+        if dry_run:
+            print(f'🗑  would delete orphan: {f}')
+            files_deleted += 1
+            continue
+        try:
+            f.unlink()
+            print(f'🗑  deleted orphan: {f}')
+            files_deleted += 1
+        except Exception as e:
+            print(f'✗ could not delete {f}: {e}')
+
+    dirs = sorted(
+        (p for p in out_root.rglob('*') if p.is_dir()),
+        key=lambda p: len(p.parts), reverse=True,
+    )
+    for d in dirs:
+        try:
+            if any(d.iterdir()):
+                continue
+            if dry_run:
+                print(f'🗑  would remove empty dir: {d}')
+            else:
+                d.rmdir()
+                print(f'🗑  removed empty dir: {d}')
+            dirs_removed += 1
+        except Exception:
+            pass
+
+    return files_deleted, dirs_removed
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -488,11 +546,20 @@ def thumbnail_images(
     recursive=True,
     overwrite=False,
     num_cores=None,
+    mirror=False,
+    dry_run=False,
+    allow_empty=False,
 ):
     root = Path(root_folder)
     if not root.exists():
         print(f"Error: '{root_folder}' does not exist")
         return
+
+    out_root = Path(output_folder) if output_folder else None
+
+    if mirror and out_root is None:
+        print("Warning: --mirror requires an output folder (-o); mirror disabled.")
+        mirror = False
 
     pattern = '**/*' if recursive else '*'
     media = sorted(
@@ -504,10 +571,37 @@ def thumbnail_images(
 
     if not media:
         print(f"No media found in '{root_folder}'")
+        if mirror and out_root and out_root.exists():
+            if allow_empty:
+                print("⚠  Source empty and --allow-empty set: pruning ALL thumbnails in output.")
+                files_deleted, dirs_removed = _prune_orphans(out_root, set(), dry_run)
+                print(f"Mirror prune ✓  deleted={files_deleted}  dirs_removed={dirs_removed}"
+                      + ("  (dry-run)" if dry_run else ""))
+            else:
+                print("⚠  Source has no media — aborting mirror prune to avoid wiping the "
+                      "destination. Re-run with --allow-empty if this is intentional.")
         return
 
     n = len(media)
     print(f'Found {n} media files. Processing…')
+
+    def _out_for(p: Path) -> Path:
+        ext = '.mp4' if p.suffix.lower() in VIDEO_EXTS else '.jpg'
+        if out_root:
+            return out_root / p.relative_to(root).with_suffix(ext)
+        return p.parent / 'thumbnails' / p.with_suffix(ext).name
+
+    expected = {_out_for(p).resolve() for p in media}
+
+    if dry_run:
+        if mirror and out_root:
+            print('\n[dry-run] Mirror mode — orphans that WOULD be deleted:')
+            files_deleted, dirs_removed = _prune_orphans(out_root, expected, dry_run=True)
+            print(f'[dry-run] Mirror prune preview ✓  would_delete={files_deleted}  '
+                  f'would_remove_dirs={dirs_removed}')
+        else:
+            print('[dry-run] No generation performed. Add --mirror to preview orphan deletions.')
+        return
 
     if num_cores is None:
         num_cores = get_num_cores()
@@ -520,16 +614,11 @@ def thumbnail_images(
 
     counter = [0]
     lock = threading.Lock()
-    out_root = Path(output_folder) if output_folder else None
 
     # Build task list (daemon placeholder = None, filled in below)
     tasks = []
     for p in media:
-        ext = '.mp4' if p.suffix.lower() in VIDEO_EXTS else '.jpg'
-        if out_root:
-            out = out_root / p.relative_to(root).with_suffix(ext)
-        else:
-            out = p.parent / 'thumbnails' / p.with_suffix(ext).name
+        out = _out_for(p)
         out.parent.mkdir(parents=True, exist_ok=True)
         tasks.append((p, out, size, video_size, quality, overwrite, counter, n, lock, gpu_sem, gpu_available, None))
 
@@ -552,6 +641,11 @@ def thumbnail_images(
     skip_n  = results.count('skipped')
     err_n   = results.count('error')
     print(f'\nDone ✓  generated={ok_n}  fixed={fixed_n}  skipped={skip_n}  errors={err_n}')
+
+    if mirror and out_root:
+        print('\nMirror mode — pruning orphan thumbnails…')
+        files_deleted, dirs_removed = _prune_orphans(out_root, expected, dry_run=False)
+        print(f'Mirror prune ✓  deleted={files_deleted}  dirs_removed={dirs_removed}')
 
 
 # ---------------------------------------------------------------------------
@@ -584,6 +678,15 @@ def main():
                    help='Regenerate thumbnails even if they already exist')
     p.add_argument('--num-cores', type=int, default=None,
                    help='Number of worker threads (default: auto)')
+    p.add_argument('--mirror', action='store_true', default=False,
+                   help='Mirror mode: delete output thumbnails whose source no longer '
+                        'exists (and prune empty dirs). Requires -o.')
+    p.add_argument('--dry-run', dest='dry_run', action='store_true', default=False,
+                   help='Preview only: with --mirror, list orphans that would be deleted; '
+                        'no thumbnails generated, nothing deleted.')
+    p.add_argument('--allow-empty', dest='allow_empty', action='store_true', default=False,
+                   help='Allow mirror pruning even when the source has no media '
+                        '(otherwise aborts to avoid wiping the destination).')
     args = p.parse_args()
 
     thumbnail_images(
@@ -595,6 +698,9 @@ def main():
         recursive=args.recursive,
         overwrite=args.overwrite,
         num_cores=args.num_cores,
+        mirror=args.mirror,
+        dry_run=args.dry_run,
+        allow_empty=args.allow_empty,
     )
 
 
