@@ -79,7 +79,7 @@ def extract_metadata(img_path):
         metadata['atime'] = stat.st_atime
         
         # Try extracting python-accessible metadata
-        raw_extensions = {'.arw', '.cr2', '.dng', '.nef', '.raw'}
+        raw_extensions = {'.arw', '.cr2', '.dng', '.nef', '.raw', '.rw2'}
         if img_path.suffix.lower() in raw_extensions:
             try:
                 with rawpy.imread(str(img_path)) as raw:
@@ -132,20 +132,21 @@ def convert_raw_to_jpeg_single(task):
     Process a single RAW file conversion task.
     """
     # REMOVED: counter, total, lock from arguments
-    raw_path, output_path, quality, move_raws_to, root_path, overwrite = task
+    raw_path, output_path, quality, move_raws_to, root_path, overwrite, delete_raws = task
 
     try:
         original_metadata = extract_metadata(raw_path)
 
         # CHECK EXISTING
         if output_path.exists() and not overwrite:
+            status = 'skipped'
             if not metadata_matches(original_metadata, output_path):
-                # We can print here safely or return a special status, 
-                # but for simplicity let's just do the work.
                 copy_metadata_to_file(original_metadata, output_path, source_path=raw_path)
-                return ('updated_metadata', raw_path.name)
-            else:
-                return ('skipped', raw_path.name)
+                status = 'updated_metadata'
+            # JPEG déjà présent => conversion considérée faite : purge du RAW si demandé.
+            if delete_raws and raw_path.exists():
+                os.remove(str(raw_path))
+            return (status, raw_path.name)
 
         # CONVERSION
         with rawpy.imread(str(raw_path)) as raw:
@@ -156,11 +157,13 @@ def convert_raw_to_jpeg_single(task):
         # Apply Metadata
         copy_metadata_to_file(original_metadata, output_path, source_path=raw_path)
 
-        # Move RAW if requested
-        if move_raws_to:
+        # Sur succès : supprimer (prioritaire) ou déplacer le RAW source.
+        if delete_raws:
+            if raw_path.exists():
+                os.remove(str(raw_path))
+        elif move_raws_to:
             move_raw_file(raw_path, root_path, move_raws_to)
 
-        # REMOVED: Internal printing and lock acquisition
         return ('success', raw_path.name)
 
     except Exception as e:
@@ -175,14 +178,14 @@ def move_raw_file(raw_path, root_path, move_raws_to):
     except Exception as e:
         print(f'✗ Error moving {raw_path.name}: {e}')
 
-def convert_raw_to_jpeg(root_folder, output_folder=None, quality=90, recursive=True, overwrite=False, move_raws_to=None, num_cores=None):
+def convert_raw_to_jpeg(root_folder, output_folder=None, quality=90, recursive=True, overwrite=False, move_raws_to=None, num_cores=None, delete_raws=False):
     root_path = Path(root_folder)
     
     if not root_path.exists():
         print(f"Error: Folder '{root_folder}' does not exist")
         return
 
-    raw_extensions = {'.arw', '.cr2', '.dng', '.nef', '.raw'}
+    raw_extensions = {'.arw', '.cr2', '.dng', '.nef', '.raw', '.rw2'}
     search_pattern = "**/*" if recursive else "*"
     
     raw_files = []
@@ -221,7 +224,7 @@ def convert_raw_to_jpeg(root_folder, output_folder=None, quality=90, recursive=T
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
         # REMOVED: counter, total, lock from the tuple
-        tasks.append((raw_path, output_path, quality, move_raws_to, root_path, overwrite))
+        tasks.append((raw_path, output_path, quality, move_raws_to, root_path, overwrite, delete_raws))
 
     successful = 0
     skipped = 0
@@ -273,10 +276,12 @@ def main():
     parser.add_argument('--no-recursive', dest='recursive', action='store_false', default=True, help='Top folder only')
     parser.add_argument('--overwrite', action='store_true', default=False, help='Force re-conversion of existing files')
     parser.add_argument('--move-raws-to', dest='move_raws_to', help='Move RAW files after conversion')
+    parser.add_argument('--delete-raws', dest='delete_raws', action='store_true', default=False,
+                        help='Delete each source RAW file after a successful conversion (prioritaire sur --move-raws-to)')
     parser.add_argument('--num-cores', type=int, default=None, help='Number of CPU cores')
-    
+
     args = parser.parse_args()
-    
+
     convert_raw_to_jpeg(
         root_folder=args.input_folder,
         output_folder=args.output_folder,
@@ -284,7 +289,8 @@ def main():
         recursive=args.recursive,
         overwrite=args.overwrite,
         move_raws_to=args.move_raws_to,
-        num_cores=args.num_cores
+        num_cores=args.num_cores,
+        delete_raws=args.delete_raws
     )
 
 if __name__ == "__main__":
