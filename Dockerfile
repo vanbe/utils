@@ -31,6 +31,7 @@ RUN pip install --no-cache-dir \
         rawpy==0.25.1 \
         imageio==2.31.2 \
         imagehash==4.3.1 \
+        flask==3.1.0 \
         PyPDF2 \
         python-pptx \
         reportlab \

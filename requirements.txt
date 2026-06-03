@@ -10,6 +10,7 @@ Pillow>=10.0.0
 rawpy==0.25.1
 imageio==2.31.2
 imagehash==4.3.1  # perceptual hashing — image_dedup.py --method perceptual
+flask==3.1.0      # review_server.py — UI revue near-duplicates
 
 # Document utilities (actions/document_utils)
 PyPDF2
