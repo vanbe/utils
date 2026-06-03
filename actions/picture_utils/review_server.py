@@ -66,6 +66,11 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
   .sizectl{{display:flex;gap:4px;align-items:center;color:#888}}
   .sizectl button{{padding:4px 10px;font-size:12px;background:#333;color:#ccc}}
   .sizectl button.on{{background:#2d6;color:#003}}
+  .pager{{display:flex;gap:8px;align-items:center;color:#888}}
+  .pg{{background:#333;color:#ccc;text-decoration:none;padding:6px 12px;
+    border-radius:6px;font-weight:700}}
+  .pg:hover{{background:#444}}
+  .pg.disabled{{opacity:.3;pointer-events:none}}
   #grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));
     gap:10px;padding:12px}}
   .group{{background:#262626;border:1px solid #333;border-radius:6px;padding:6px;
@@ -88,7 +93,12 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 </style></head><body>
 <header>
   <b>Revue near-duplicates</b>
-  <span class="muted">lot de {n}/{total} groupes en attente</span>
+  <span class="muted">{total} groupes en attente</span>
+  <span class="pager">
+    <a class="pg {prevdis}" href="/?page={prev}">‹ Préc.</a>
+    <span>page {page1}/{pages} <span class="muted">({n} ici)</span></span>
+    <a class="pg {nextdis}" href="/?page={next}">Suiv. ›</a>
+  </span>
   <span class="muted">· clic = <span style="color:#2d6">garder</span> · par groupe : <span style="color:#2d6">✓ tout</span> / <span style="color:#c33">⊘ ignorer</span> · autres → Doublons/</span>
   <span class="sizectl">Vignettes
     <button type="button" data-th="110" onclick="setTh(110,this)">S</button>
@@ -100,6 +110,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 </header>
 <div id="grid">{cards}</div>
 <script>
+const PAGE={page};
 function toggle(el){{ if(el.closest('.group').classList.contains('ignored')) return;
   el.classList.toggle('keep'); }}
 function keepAll(btn){{ const g=btn.closest('.group'); g.classList.remove('ignored');
@@ -122,7 +133,7 @@ function submitBatch(){{
      +"TOUTES leurs images iront dans Doublons/. Continuer ?")) return;
   fetch('/process',{{method:'POST',headers:{{'Content-Type':'application/json'}},
     body:JSON.stringify({{groups}})}}).then(r=>r.json()).then(r=>{{
-      location.href='/';
+      location.href='/?page='+PAGE;
     }});
 }}
 </script></body></html>"""
@@ -156,12 +167,25 @@ def _card(group):
 def index():
     data = _load()
     pend = _pending(data)
-    batch = pend[:CFG['batch']]
-    if not batch:
+    total = len(pend)
+    if not total:
         return ("<body style='background:#1e1e1e;color:#2d6;font:20px system-ui;"
                 "padding:40px'>✅ Plus aucun groupe en attente. Revue terminée.</body>")
+    bs = CFG['batch']
+    pages = (total + bs - 1) // bs
+    try:
+        page = int(request.args.get('page', 0))
+    except (TypeError, ValueError):
+        page = 0
+    page = max(0, min(page, pages - 1))
+    batch = pend[page * bs:(page + 1) * bs]
     cards = ''.join(_card(g) for g in batch)
-    return PAGE.format(n=len(batch), total=len(pend), cards=cards)
+    return PAGE.format(
+        n=len(batch), total=total, cards=cards,
+        page=page, page1=page + 1, pages=pages,
+        prev=page - 1, next=page + 1,
+        prevdis='disabled' if page == 0 else '',
+        nextdis='disabled' if page >= pages - 1 else '')
 
 
 @app.route('/thumb')
