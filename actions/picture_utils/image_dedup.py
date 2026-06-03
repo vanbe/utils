@@ -121,6 +121,45 @@ def find_exact_duplicates(root, extensions=IMAGE_EXTENSIONS, workers=8):
     return groups
 
 
+class _BKTree:
+    """BK-tree (Burkhard-Keller) pour requêtes de voisinage en distance de Hamming.
+
+    Permet de clusteriser les empreintes perceptuelles en O(n log n) au lieu de
+    O(n²) — indispensable à grande échelle (dizaines de milliers d'images)."""
+
+    def __init__(self, distance):
+        self._distance = distance
+        self._root = None
+
+    def add(self, item):
+        if self._root is None:
+            self._root = (item, {})
+            return
+        node, children = self._root
+        while True:
+            d = self._distance(item, node)
+            nxt = children.get(d)
+            if nxt is None:
+                children[d] = (item, {})
+                return
+            node, children = nxt
+
+    def query(self, item, threshold):
+        if self._root is None:
+            return []
+        out, stack = [], [self._root]
+        while stack:
+            node, children = stack.pop()
+            d = self._distance(item, node)
+            if d <= threshold:
+                out.append(node)
+            lo, hi = d - threshold, d + threshold
+            for dist, child in children.items():
+                if lo <= dist <= hi:
+                    stack.append(child)
+        return out
+
+
 def find_perceptual_duplicates(root, hash_method='dhash', threshold=5,
                                extensions=IMAGE_EXTENSIONS, workers=8):
     """Groupes de *near-duplicates* par perceptual hash (imagehash).
@@ -172,11 +211,16 @@ def find_perceptual_duplicates(root, hash_method='dhash', threshold=5,
             x = parent[x]
         return x
 
-    if threshold > 0:
-        for i in range(len(keys)):
-            for j in range(i + 1, len(keys)):
-                if distinct[keys[i]] - distinct[keys[j]] <= threshold:
-                    ra, rb = find(keys[i]), find(keys[j])
+    if threshold > 0 and len(keys) > 1:
+        # BK-tree : pour chaque empreinte, voisins en Hamming ≤ threshold -> union.
+        bk = _BKTree(lambda a, b: a - b)
+        for k in keys:
+            bk.add(distinct[k])
+        for k in keys:
+            for neighbor in bk.query(distinct[k], threshold):
+                nk = str(neighbor)
+                if nk != k:
+                    ra, rb = find(k), find(nk)
                     if ra != rb:
                         parent[ra] = rb
 
@@ -187,10 +231,13 @@ def find_perceptual_duplicates(root, hash_method='dhash', threshold=5,
     groups = []
     for members in clusters.values():
         if len(members) > 1:
+            rels = sorted(os.path.relpath(p, root).replace(os.sep, '/') for p in members)
+            gid = hashlib.sha1('\n'.join(rels).encode('utf-8')).hexdigest()[:12]
             groups.append({
+                'id':        gid,         # id stable (hash des chemins) pour la revue
                 'method':    hash_method,
                 'threshold': threshold,
-                'paths':     sorted(os.path.relpath(p, root).replace(os.sep, '/') for p in members),
+                'paths':     rels,
                 'decision':  'pending',   # à valider (anti faux-positif)
             })
     groups.sort(key=lambda g: g['paths'][0])
