@@ -121,43 +121,12 @@ def find_exact_duplicates(root, extensions=IMAGE_EXTENSIONS, workers=8):
     return groups
 
 
-class _BKTree:
-    """BK-tree (Burkhard-Keller) pour requêtes de voisinage en distance de Hamming.
-
-    Permet de clusteriser les empreintes perceptuelles en O(n log n) au lieu de
-    O(n²) — indispensable à grande échelle (dizaines de milliers d'images)."""
-
-    def __init__(self, distance):
-        self._distance = distance
-        self._root = None
-
-    def add(self, item):
-        if self._root is None:
-            self._root = (item, {})
-            return
-        node, children = self._root
-        while True:
-            d = self._distance(item, node)
-            nxt = children.get(d)
-            if nxt is None:
-                children[d] = (item, {})
-                return
-            node, children = nxt
-
-    def query(self, item, threshold):
-        if self._root is None:
-            return []
-        out, stack = [], [self._root]
-        while stack:
-            node, children = stack.pop()
-            d = self._distance(item, node)
-            if d <= threshold:
-                out.append(node)
-            lo, hi = d - threshold, d + threshold
-            for dist, child in children.items():
-                if lo <= dist <= hi:
-                    stack.append(child)
-        return out
+def _hash_to_int(h):
+    """imagehash (matrice booléenne N×N) -> entier, pour banding + popcount."""
+    v = 0
+    for b in h.hash.flatten():
+        v = (v << 1) | int(bool(b))
+    return v
 
 
 def find_perceptual_duplicates(root, hash_method='dhash', threshold=5,
@@ -212,17 +181,31 @@ def find_perceptual_duplicates(root, hash_method='dhash', threshold=5,
         return x
 
     if threshold > 0 and len(keys) > 1:
-        # BK-tree : pour chaque empreinte, voisins en Hamming ≤ threshold -> union.
-        bk = _BKTree(lambda a, b: a - b)
-        for k in keys:
-            bk.add(distinct[k])
-        for k in keys:
-            for neighbor in bk.query(distinct[k], threshold):
-                nk = str(neighbor)
-                if nk != k:
-                    ra, rb = find(k), find(nk)
-                    if ra != rb:
-                        parent[ra] = rb
+        # Multi-Index Hashing : K = threshold+1 bandes. Deux empreintes à distance
+        # de Hamming ≤ threshold partagent forcément ≥1 bande identique (pigeonhole)
+        # → on ne compare en plein (popcount) que les candidats partageant une bande.
+        # O(n) en pratique (vs O(n²) ou BK-tree lent sur données uniformes).
+        nbits = int(distinct[keys[0]].hash.size)
+        ints = {k: _hash_to_int(distinct[k]) for k in keys}
+        K = threshold + 1
+        bounds = [round(nbits * i / K) for i in range(K + 1)]
+        for bi in range(K):
+            lo, hi = bounds[bi], bounds[bi + 1]
+            if hi <= lo:
+                continue
+            shift = nbits - hi
+            mask = (1 << (hi - lo)) - 1
+            table = {}
+            for k in keys:
+                table.setdefault((ints[k] >> shift) & mask, []).append(k)
+            for bucket in table.values():
+                for i in range(len(bucket)):
+                    ki = bucket[i]
+                    for j in range(i + 1, len(bucket)):
+                        kj = bucket[j]
+                        ra, rb = find(ki), find(kj)
+                        if ra != rb and (ints[ki] ^ ints[kj]).bit_count() <= threshold:
+                            parent[ra] = rb
 
     clusters = {}
     for p, h in hashes.items():
