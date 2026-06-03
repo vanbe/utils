@@ -37,13 +37,14 @@ The skill file at `.claude/skills/utils-convert/SKILL.md` documents every action
 | Change | What to update |
 |--------|---------------|
 | New action added to `_REGISTRY` in `utils_run.py` | Add a row to the action table in the skill |
+| New **folder** action added to `_FOLDER_REGISTRY` in `utils_run.py` | Add a row to the "Folder operations" table in the skill **and** wire it into `_actions_for` + `_ACTION_CAT` in `utils_tools.py` (which reads the script path from `_FOLDER_REGISTRY` — single source of truth, no path drift) |
 | Action removed or renamed in `utils_run.py` | Remove/rename the corresponding row in the skill |
 | Supported extensions change for an action | Update the skill table and the "Choosing the right action" notes |
 | Output filename convention changes (e.g. `_extracted.md` suffix) | Update the skill table |
 | New action wired up in `_actions_for` in `utils_tools.py` but not yet in `utils_run.py` | Add it to `utils_run.py` first, then update the skill |
 | New document type added to `utils_tools.py` (new `*_EXTS` constant + actions) | Mirror it in `utils_run.py` and the skill |
 
-The single source of truth for the registry is `utils_run.py` (`_REGISTRY` dict). The skill is a human/agent-readable mirror of it — they must stay identical.
+The single source of truth for the registries is `utils_run.py` — `_REGISTRY` (per-file actions) and `_FOLDER_REGISTRY` (folder/batch actions). The skill and `utils_tools.py` (TUI) are mirrors of it — they must stay in sync. Folder-action **script paths live only in `_FOLDER_REGISTRY`**; the TUI imports it, so a path can't drift between TUI and CLI.
 
 ---
 

@@ -19,6 +19,10 @@ import time
 import glob
 from datetime import datetime
 
+# Source de vérité des scripts d'opérations dossier (chemins partagés avec la CLI
+# utils_run.py — évite toute dérive de chemin entre le TUI et la CLI).
+from utils_run import _FOLDER_REGISTRY
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -1320,7 +1324,7 @@ def act_thumbnails(path: str):
     if rec_idx == 1: args.append('--no-recursive')
     if ow_idx  == 1: args.append('--overwrite')
     print()
-    rc = _py(os.path.join(_PIC_UTILS, 'thumbnailing.py'), *args)
+    rc = _py(_FOLDER_REGISTRY['thumbnails']['script'], *args)
     _show_result(rc)
     pause()
 
@@ -1348,8 +1352,28 @@ def act_raw_to_jpg(path: str):
     if ow_idx  == 1: args.append('--overwrite')
     if move:         args += ['--move-raws-to', move]
     print()
-    rc = _py(os.path.join(_PIC_UTILS, 'raw_to_jpg', 'raw2jpeg.py'), *args)
+    rc = _py(_FOLDER_REGISTRY['raw-to-jpg']['script'], *args)
     _show_result(rc)
+    pause()
+
+
+def act_image_dedup(path: str):
+    """path is a directory — exact (SHA-256) duplicate detection → duplicates.json."""
+    label = os.path.basename(path) or path
+    print(f'\n  {bold("Find duplicate images (exact)")}  {dim(label)}\n')
+
+    workers = ask('Hashing threads (I/O)', '8')
+    if not confirm([
+        ('Folder',   label),
+        ('Method',   'exact — SHA-256 (zero false positives)'),
+        ('Output',   'duplicates.json  (at folder root)'),
+        ('Threads',  workers),
+    ]): return
+
+    print()
+    out = os.path.join(path, 'duplicates.json')
+    rc = _py(_FOLDER_REGISTRY['image-dedup']['script'], path, '--workers', workers)
+    _show_result(rc, out)
     pause()
 
 
@@ -1491,6 +1515,8 @@ _ACTION_CAT = {
     'Convert to PDF':             'Document',
     'Create thumbnails':          'Image',
     'Convert folder RAWs to JPEG':'Image',
+    'RAW → JPEG':                 'Image',
+    'Find duplicate images':      'Image',
     'Git Pull All':               'Developer',
 }
 
@@ -1545,6 +1571,8 @@ def _actions_for(path: str) -> list[tuple[str, str, callable]]:
             acts.append(('Create thumbnails', 'batch JPEG/video thumbnails',           act_thumbnails))
         if RAW_EXTS & exts:
             acts.append(('RAW → JPEG',        'batch convert all RAW files',           act_raw_to_jpg))
+        if (IMAGE_EXTS | RAW_EXTS) & exts:
+            acts.append(('Find duplicate images', 'exact dedup (SHA-256) → duplicates.json', act_image_dedup))
         return acts
 
     ext = os.path.splitext(path)[1].lower()

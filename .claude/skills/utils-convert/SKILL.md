@@ -87,3 +87,22 @@ fi
 ## MD files need no conversion
 
 `.md` files are already plain text — read them directly with the `Read` tool.
+
+## Folder operations (image / batch)
+
+Besides per-file actions, `utils_run.py` exposes **folder-level** operations that
+act on a whole directory (recursively). Same JSON contract.
+
+```bash
+python3 "$UTILS_RUN" --list-folders                          # discover folder actions
+python3 "$UTILS_RUN" --folder <dir> <action> [extra args]    # run one (args passed to the script)
+```
+
+| Action        | Input | Output                          | Notes                                            |
+|---------------|-------|---------------------------------|--------------------------------------------------|
+| `image-dedup` | dir   | `<dir>/duplicates.json`         | EXACT (SHA-256) duplicate groups, relative paths |
+| `raw-to-jpg`  | dir   | JPEGs in place                  | RAW → JPEG (rawpy + exiftool); `--delete-raws`   |
+| `thumbnails`  | dir   | thumbnails                      | Pillow/ffmpeg; `--mirror` to sync deletions      |
+
+Success JSON for `image-dedup`: `{"status":"ok","output_file":"/abs/<dir>/duplicates.json"}`.
+For in-place actions (raw-to-jpg, thumbnails) there is no single output file: `{"status":"ok"}`.

@@ -7,11 +7,19 @@ All progress/logs from underlying scripts go to stderr.
 stdout carries only the final JSON result.
 
 Usage:
-    utils_run.py <file>               List available actions for <file>
-    utils_run.py <file> <action>      Run action on <file>
-    utils_run.py --list-all           List every registered action
+    utils_run.py <file>                       List available actions for <file>
+    utils_run.py <file> <action>              Run a file action on <file>
+    utils_run.py --list-all                   List every registered file action
+    utils_run.py --list-folders               List every folder action
+    utils_run.py --folder <dir> <action> ..   Run a folder action on <dir>
+                                              (extra args are passed through to the script)
 
 Exit codes: 0 = ok / list printed, 1 = error, 2 = bad usage
+
+Folder actions (operate on a directory):
+    image-dedup      <dir>  → duplicates.json   (exact SHA-256 duplicate groups)
+    raw-to-jpg       <dir>  → JPEGs in place     (rawpy + exiftool)
+    thumbnails       <dir>  → thumbnails         (Pillow/ffmpeg; supports --mirror)
 
 JSON — list mode:
     [{"action": "doc-to-md", "desc": "..."}, ...]
@@ -46,9 +54,13 @@ import subprocess
 import sys
 
 _DIR    = os.path.dirname(os.path.abspath(__file__))
+# venv du projet si présent (WSL), sinon le python courant (portable / CI / conteneur).
 _PYTHON = os.path.join(_DIR, '.venv', 'bin', 'python3')
+if not os.path.exists(_PYTHON):
+    _PYTHON = sys.executable
 _DOC    = os.path.join(_DIR, 'actions', 'document_utils')
 _AI     = os.path.join(_DIR, 'actions', 'ai_utils')
+_PIC    = os.path.join(_DIR, 'actions', 'picture_utils')
 
 
 def _stem(path: str) -> str:
@@ -128,6 +140,29 @@ _REGISTRY: dict[str, dict] = {
 }
 
 
+# Folder-level operations (operate on a directory, not a single file).
+# Source of truth for these scripts: both this CLI and the TUI read it here, so a
+# script path can't drift in one place and break the other.
+# Each entry: slug → {script, output (lambda(dir)->path|None), desc}.
+_FOLDER_REGISTRY: dict[str, dict] = {
+    'image-dedup': {
+        'script': os.path.join(_PIC, 'image_dedup.py'),
+        'output': lambda d: os.path.join(d, 'duplicates.json'),
+        'desc':   'Find EXACT (byte-identical) duplicate images → JSON of path groups',
+    },
+    'raw-to-jpg': {
+        'script': os.path.join(_PIC, 'raw2jpeg.py'),
+        'output': None,        # in-place, many outputs
+        'desc':   'Convert every RAW image in the folder to JPEG (rawpy + exiftool)',
+    },
+    'thumbnails': {
+        'script': os.path.join(_PIC, 'thumbnailing.py'),
+        'output': None,        # thumbnails written beside/into target folder
+        'desc':   'Generate JPEG/video thumbnails for the folder (supports --mirror)',
+    },
+}
+
+
 def _actions_for(path: str) -> list[dict]:
     ext = os.path.splitext(path)[1].lower()
     return [
@@ -179,6 +214,40 @@ def _run(path: str, action: str) -> dict:
     return {'status': 'ok', 'output_file': out_file}
 
 
+def _run_folder(directory: str, action: str, extra: list = None) -> dict:
+    directory = os.path.abspath(directory)
+
+    if not os.path.isdir(directory):
+        return {'status': 'error', 'message': f'Folder not found: {directory}'}
+
+    if action not in _FOLDER_REGISTRY:
+        return {
+            'status':  'error',
+            'message': f'Unknown folder action {action!r}. Run --list-folders for valid actions.',
+        }
+
+    info = _FOLDER_REGISTRY[action]
+    cmd  = [_PYTHON, info['script'], directory] + list(extra or [])
+
+    # Route all script output to our stderr so stdout stays clean for JSON.
+    proc = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
+
+    if proc.returncode != 0:
+        return {'status': 'error', 'message': f'Script exited with code {proc.returncode}'}
+
+    out = info['output'](directory) if info.get('output') else None
+    if out is not None and not os.path.isfile(out):
+        return {
+            'status':  'error',
+            'message': f'Script succeeded but expected output not found: {out}',
+        }
+
+    result = {'status': 'ok'}
+    if out is not None:
+        result['output_file'] = out
+    return result
+
+
 def _emit(data) -> None:
     print(json.dumps(data, ensure_ascii=False, indent=2))
 
@@ -194,6 +263,21 @@ def main():
         _emit([{'action': slug, 'desc': info['desc'], 'ext': sorted(info['ext'])}
                for slug, info in _REGISTRY.items()])
         return
+
+    if argv[0] == '--list-folders':
+        _emit([{'action': slug, 'desc': info['desc']}
+               for slug, info in _FOLDER_REGISTRY.items()])
+        return
+
+    if argv[0] == '--folder':
+        if len(argv) < 3:
+            _emit({'status': 'error',
+                   'message': 'Usage: utils_run.py --folder <dir> <action> [opts...]'})
+            sys.exit(2)
+        directory, action, extra = argv[1], argv[2], argv[3:]
+        result = _run_folder(directory, action, extra)
+        _emit(result)
+        sys.exit(0 if result.get('status') == 'ok' else 1)
 
     file_path = argv[0]
 
