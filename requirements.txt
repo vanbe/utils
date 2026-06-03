@@ -9,6 +9,7 @@ torchaudio
 Pillow>=10.0.0
 rawpy==0.25.1
 imageio==2.31.2
+imagehash==4.3.1  # perceptual hashing — image_dedup.py --method perceptual
 
 # Document utilities (actions/document_utils)
 PyPDF2

@@ -30,6 +30,7 @@ RUN pip install --no-cache-dir \
         "Pillow>=10.0.0" \
         rawpy==0.25.1 \
         imageio==2.31.2 \
+        imagehash==4.3.1 \
         PyPDF2 \
         python-pptx \
         reportlab \
