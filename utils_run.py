@@ -148,7 +148,12 @@ _FOLDER_REGISTRY: dict[str, dict] = {
     'image-dedup': {
         'script': os.path.join(_PIC, 'image_dedup.py'),
         'output': lambda d: os.path.join(d, 'duplicates.json'),
-        'desc':   'Find EXACT (byte-identical) duplicate images → JSON of path groups',
+        'desc':   'Duplicate images → JSON of path groups (--method exact|perceptual)',
+    },
+    'image-index': {
+        'script': os.path.join(_PIC, 'image_index.py'),
+        'output': lambda d: os.path.join(d, '.image_index.json'),
+        'desc':   'Build/refresh a SHA-256 index of a library (incremental, --exclude dirs)',
     },
     'raw-to-jpg': {
         'script': os.path.join(_PIC, 'raw2jpeg.py'),

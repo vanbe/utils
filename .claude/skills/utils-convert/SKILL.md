@@ -98,11 +98,12 @@ python3 "$UTILS_RUN" --list-folders                          # discover folder a
 python3 "$UTILS_RUN" --folder <dir> <action> [extra args]    # run one (args passed to the script)
 ```
 
-| Action        | Input | Output                          | Notes                                            |
-|---------------|-------|---------------------------------|--------------------------------------------------|
-| `image-dedup` | dir   | `<dir>/duplicates.json`         | EXACT (SHA-256) duplicate groups, relative paths |
-| `raw-to-jpg`  | dir   | JPEGs in place                  | RAW → JPEG (rawpy + exiftool); `--delete-raws`   |
-| `thumbnails`  | dir   | thumbnails                      | Pillow/ffmpeg; `--mirror` to sync deletions      |
+| Action         | Input | Output                        | Notes                                                          |
+|----------------|-------|-------------------------------|----------------------------------------------------------------|
+| `image-dedup`  | dir   | `<dir>/duplicates.json`       | Duplicate groups. `--method exact` (SHA-256, default) or `perceptual` (imagehash, `--threshold N`, groups are `decision:pending` to review) |
+| `image-index`  | dir   | `<dir>/.image_index.json`     | Incremental SHA-256 index of a library (path→hash). `--exclude <subdir>` (repeatable). For O(1) "do I already have this?" lookups |
+| `raw-to-jpg`   | dir   | JPEGs in place                | RAW → JPEG (rawpy + exiftool); `--delete-raws`                 |
+| `thumbnails`   | dir   | thumbnails                    | Pillow/ffmpeg; `--mirror` to sync deletions                   |
 
 Success JSON for `image-dedup`: `{"status":"ok","output_file":"/abs/<dir>/duplicates.json"}`.
 For in-place actions (raw-to-jpg, thumbnails) there is no single output file: `{"status":"ok"}`.
