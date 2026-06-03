@@ -56,40 +56,68 @@ def _pending(data):
 PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <title>Revue doublons</title>
 <style>
+  :root{{--th:150px}}
   body{{margin:0;background:#1e1e1e;color:#ddd;font:13px system-ui}}
   header{{position:sticky;top:0;background:#111;padding:10px 16px;display:flex;
-    gap:16px;align-items:center;z-index:10;box-shadow:0 2px 8px #0008}}
+    flex-wrap:wrap;gap:12px;align-items:center;z-index:10;box-shadow:0 2px 8px #0008}}
   header b{{font-size:15px}} .muted{{color:#888}}
   button{{background:#2d6;border:0;color:#003;font-weight:700;padding:9px 18px;
     border-radius:6px;cursor:pointer;font-size:14px}}
-  #grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));
+  .sizectl{{display:flex;gap:4px;align-items:center;color:#888}}
+  .sizectl button{{padding:4px 10px;font-size:12px;background:#333;color:#ccc}}
+  .sizectl button.on{{background:#2d6;color:#003}}
+  #grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));
     gap:10px;padding:12px}}
   .group{{background:#262626;border:1px solid #333;border-radius:6px;padding:6px;
-    display:flex;flex-wrap:wrap;gap:4px}}
+    display:flex;flex-wrap:wrap;gap:4px;align-content:flex-start}}
+  .gtools{{flex-basis:100%;display:flex;gap:6px;margin-bottom:2px}}
+  .gb{{background:#333;color:#ccc;border:1px solid #555;border-radius:4px;
+    padding:3px 9px;font-size:12px;font-weight:600;cursor:pointer}}
+  .gb-keep:hover{{background:#2d6;color:#003}}
+  .gb-ign:hover{{background:#c33;color:#fff;border-color:#c33}}
+  .group.ignored{{opacity:.45;outline:2px dashed #c33;outline-offset:-2px}}
+  .group.ignored .gb-ign{{background:#c33;color:#fff;border-color:#c33}}
   .im{{position:relative;cursor:pointer;border:3px solid transparent;border-radius:4px}}
-  .im img{{display:block;height:150px;width:auto;border-radius:2px}}
+  .im img{{display:block;height:var(--th);width:auto;border-radius:2px}}
   .im.keep{{border-color:#2d6}}
   .im .x{{position:absolute;inset:0;background:#c33a;display:none;
     align-items:center;justify-content:center;font-size:26px;border-radius:2px}}
   .im:not(.keep) .x{{display:flex}}
+  .group.ignored .im .x{{display:none}}
   .im .sz{{position:absolute;bottom:0;left:0;background:#000a;padding:1px 4px;font-size:10px}}
 </style></head><body>
 <header>
   <b>Revue near-duplicates</b>
   <span class="muted">lot de {n}/{total} groupes en attente</span>
-  <span class="muted">· clic = <span style="color:#2d6">garder</span> · les autres → Doublons/</span>
+  <span class="muted">· clic = <span style="color:#2d6">garder</span> · par groupe : <span style="color:#2d6">✓ tout</span> / <span style="color:#c33">⊘ ignorer</span> · autres → Doublons/</span>
+  <span class="sizectl">Vignettes
+    <button type="button" data-th="110" onclick="setTh(110,this)">S</button>
+    <button type="button" data-th="150" onclick="setTh(150,this)">M</button>
+    <button type="button" data-th="210" onclick="setTh(210,this)">L</button>
+  </span>
   <span style="flex:1"></span>
   <button onclick="submitBatch()">Traiter ce lot ({n}) →</button>
 </header>
 <div id="grid">{cards}</div>
 <script>
-function toggle(el){{ el.classList.toggle('keep'); }}
+function toggle(el){{ if(el.closest('.group').classList.contains('ignored')) return;
+  el.classList.toggle('keep'); }}
+function keepAll(btn){{ const g=btn.closest('.group'); g.classList.remove('ignored');
+  g.querySelectorAll('.im').forEach(i=>i.classList.add('keep')); }}
+function toggleIgnore(btn){{ btn.closest('.group').classList.toggle('ignored'); }}
+function setTh(px,btn){{ document.documentElement.style.setProperty('--th',px+'px');
+  localStorage.setItem('th',px);
+  document.querySelectorAll('.sizectl button').forEach(b=>b.classList.toggle('on',b===btn)); }}
+(function(){{ const px=localStorage.getItem('th')||'150';
+  document.documentElement.style.setProperty('--th',px+'px');
+  document.querySelectorAll('.sizectl button').forEach(b=>b.classList.toggle('on',b.dataset.th===px)); }})();
 function submitBatch(){{
-  const groups=[...document.querySelectorAll('.group')].map(g=>({{
-    id:g.dataset.id,
-    keep:[...g.querySelectorAll('.im.keep')].map(i=>i.dataset.path)
-  }}));
-  const bad=groups.filter(g=>g.keep.length===0);
+  const groups=[...document.querySelectorAll('.group')].map(g=>(
+    g.classList.contains('ignored')
+      ? {{id:g.dataset.id, ignored:true}}
+      : {{id:g.dataset.id, keep:[...g.querySelectorAll('.im.keep')].map(i=>i.dataset.path)}}
+  ));
+  const bad=groups.filter(g=>!g.ignored && g.keep.length===0);
   if(bad.length && !confirm(bad.length+" groupe(s) sans aucune image gardée → "
      +"TOUTES leurs images iront dans Doublons/. Continuer ?")) return;
   fetch('/process',{{method:'POST',headers:{{'Content-Type':'application/json'}},
@@ -117,7 +145,11 @@ def _card(group):
             f'<div class="{cls}" data-path="{rel}" onclick="toggle(this)">'
             f'<img loading="lazy" src="/thumb?p={q}"><div class="x">✕</div>'
             f'<div class="sz">{kb} Ko</div></div>')
-    return f'<div class="group" data-id="{group["id"]}">{"".join(ims)}</div>'
+    tools = ('<div class="gtools">'
+             '<button type="button" class="gb gb-keep" onclick="keepAll(this)">✓ tout garder</button>'
+             '<button type="button" class="gb gb-ign" onclick="toggleIgnore(this)">⊘ ignorer</button>'
+             '</div>')
+    return f'<div class="group" data-id="{group["id"]}">{tools}{"".join(ims)}</div>'
 
 
 @app.route('/')
@@ -159,16 +191,20 @@ def thumb():
 @app.route('/process', methods=['POST'])
 def process():
     payload = request.get_json(force=True)
-    decisions = {g['id']: set(g.get('keep', [])) for g in payload.get('groups', [])}
-    moved, kept_all, errors = 0, 0, 0
+    moved, kept_all, skipped, errors = 0, 0, 0, 0
     os.makedirs(CFG['doublons'], exist_ok=True)
     with _LOCK:
         data = _load()
         by_id = {g['id']: g for g in data.get('groups', [])}
-        for gid, keep in decisions.items():
-            g = by_id.get(gid)
+        for pg in payload.get('groups', []):
+            g = by_id.get(pg.get('id'))
             if not g or g.get('decision') != 'pending':
                 continue
+            if pg.get('ignored'):
+                g['decision'] = 'skipped'   # parqué hors file, rien déplacé
+                skipped += 1
+                continue
+            keep = set(pg.get('keep', []))
             discard = [r for r in g['paths'] if r not in keep]
             if not discard:
                 g['decision'] = 'kept_all'   # tout gardé = pas un doublon
@@ -195,8 +231,9 @@ def process():
             g['kept'] = sorted(keep)
             g['moved_to_doublons'] = done
         _save(data)
-    print(f"[review] lot traité : {moved} déplacés, {kept_all} gardés-entiers, {errors} erreurs")
-    return {'moved': moved, 'kept_all': kept_all, 'errors': errors}
+    print(f"[review] lot traité : {moved} déplacés, {kept_all} gardés-entiers, "
+          f"{skipped} ignorés, {errors} erreurs")
+    return {'moved': moved, 'kept_all': kept_all, 'skipped': skipped, 'errors': errors}
 
 
 def main():
