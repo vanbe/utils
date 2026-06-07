@@ -18,6 +18,26 @@ sudo apt install -y build-essential cmake git ffmpeg python3.12-venv \
     libimage-exiftool-perl \
     tesseract-ocr tesseract-ocr-eng tesseract-ocr-fra
 
+# ── Audio recorder backend ("Record audio") ──────────────────────────────────
+# Sous WSL : la capture de la sortie système passe par le binaire WASAPI
+# autonome capture.exe (non versionné) → on installe le toolchain mingw et on le
+# construit ici. Sur Linux natif : la capture est locale (PulseAudio), parec sert
+# aux vumètres.
+if grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null; then
+    echo ""
+    echo "WSL detected — building Windows capture binary (WASAPI loopback)…"
+    sudo apt install -y g++-mingw-w64-x86-64
+    if bash "$SCRIPT_DIR/actions/audio_utils/capture/build.sh"; then
+        echo "  → actions/audio_utils/bin/capture.exe"
+    else
+        echo "  ⚠ capture.exe build failed — 'Record audio' will offer to rebuild later"
+    fi
+else
+    echo ""
+    echo "Installing PulseAudio utils (parec — audio level meters)…"
+    sudo apt install -y pulseaudio-utils || true
+fi
+
 # ── Python virtual environment ────────────────────────────────────────────────
 if [ ! -f "$VENV_DIR/bin/activate" ]; then
     echo "Creating virtual environment at $VENV_DIR..."

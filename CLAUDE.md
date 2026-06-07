@@ -133,6 +133,83 @@ the paging cliff by several layers.
 
 ---
 
+## Audio recording (action "Record audio")
+
+Capture multi-sources (micros + sorties système) → **un seul FLAC multicanal** +
+sidecar `<name>.channels.json` (map canal→source). Première étape vers la
+transcription par canal (`transcribe_audio.py`). **Action de dossier, TUI-only.**
+
+- **Moteur** : `actions/audio_utils/recorder.py` — `detect_backend()`,
+  `list_sources()`, `class Recorder`. Backend-aware :
+  - `linux` : capture locale PulseAudio/PipeWire (`parec` pour les vumètres,
+    `ffmpeg -f pulse … amerge` pour le FLAC). Les SORTIES = sources `.monitor`.
+  - `wsl` : WSL ne peut pas capter la sortie système Windows nativement. La
+    capture est déléguée à Windows via le binaire **`bin/capture.exe`** (loopback
+    WASAPI = **API Windows intégrée, rien à installer** : pas de driver, pas de
+    filtre DShow/`regsvr32`, pas de VB-CABLE/VoiceMeeter, pas de VC++ redist).
+    Lancé en interop ; PCM s16le sur stdout → `ffmpeg` (WSL) encode le FLAC ;
+    lignes `LEVEL i rms` sur stderr → vumètres.
+- **`capture.exe` n'est PAS versionné** (gitignoré dans `bin/`). On committe la
+  source + les scripts : `actions/audio_utils/capture/` (`capture.cpp`,
+  `build.sh` cross-compile mingw, `build.bat` Windows, `README.md`). La TUI
+  propose de le **construire** s'il manque (`recorder.build_capture()`). Cross-build
+  vérifié : `g++-mingw-w64-x86-64`, binaire statique, imports = `kernel32/msvcrt/
+  ole32` uniquement.
+- **TUI-only assumé** : l'action est câblée dans `_actions_for` (branche dossier)
+  + `_ACTION_CAT` de `utils_tools.py`, mais **PAS** dans `_REGISTRY`/
+  `_FOLDER_REGISTRY` de `utils_run.py` ni dans `SKILL.md` (enregistrement live =
+  interactif). Ne pas la croire « manquante » lors d'une passe de sync registries.
+- **Démux** : `ffmpeg -i in.flac -filter_complex "pan=mono|c0=cK"` extrait le
+  canal K (cf. `channels.json`) → `transcribe_audio.py` par canal.
+
+### Transcription live par canal
+
+Option « Transcription live ? Oui » dans *Record audio* → transcrit chaque canal
+en direct, affichage défilant (`Moi` / `Système`) + `.srt` aligné sur le FLAC.
+
+- **Moteur** : `actions/audio_utils/live_transcribe.py` — `class LiveTranscriber`.
+  Reçoit le PCM via `Recorder(on_pcm=…)` (tee : `capture.exe`/pulse → Python →
+  ffmpeg FLAC **et** transcription), désentrelace par canal (`channels.json`),
+  downmix mono + resample 16 kHz, **VAD-gate** par énergie, file → **un seul
+  worker WhisperModel partagé**.
+- **Attribution locuteur = par canal**, pas de pyannote : `input`→« Moi »,
+  `output`→« Système ». C'est l'intérêt majeur du multicanal.
+- **1 seul modèle partagé** (canaux en série) : sur un GPU unique, dédoubler ne
+  gagne rien et **2 modèles turbo ne tiennent pas en 6 Go** + DWM Windows. VAD-gate
+  → micro muet = coût nul. faster-whisper n'est pas streaming → **chunk-on-silence**.
+- **Sorties** : `.srt` (avec timings) **et** `.md` (sans timings) par défaut.
+- **Code mutualisé** : `whisper_common.py` (table modèles, chargement+fallback OOM,
+  **`write_srt`/`write_md`**) est utilisé par `live_transcribe.py` ET
+  `transcribe_audio.py` → le MD live est **identique** au MD différé (même writer).
+  Poids de modèle partagés (`download_root` = `vendor/models/whisper`).
+- **Modèles recommandés = défaut « (recommandé) »**, **distincts live vs différé**
+  via `whisper_common.recommended_model(role)` : `role='live'` → `LIVE_TRANSCRIBE_MODEL`
+  (contrainte temps réel), `role='transcribe'` → `TRANSCRIBE_MODEL` (qualité, sans
+  contrainte). Calcul matériel (`setup_env.py`) : GPU 5–10 Go → turbo pour les deux ;
+  ≥10 Go → live turbo / différé large ; **CPU → live base (temps réel) / différé small**.
+  Clés dans `_AUTO_KEYS`. (Bench espeak CPU 2 cœurs : la qualité dépend surtout de
+  l'audio réel ; small > base > tiny ; small n'est pas temps réel sur CPU faible.)
+- **Hôte réactif** : `LIVE_TRANSCRIBE_CPU_THREADS` (= cœurs − 1) limite les threads
+  CPU du live (sans effet sur GPU).
+- **Décodage par canal (piège corrigé)** : comme on VAD-gate déjà nous-mêmes,
+  le worker décode avec `vad_filter=False` **et `no_speech_threshold=1.0`**.
+  Sans ce dernier, faster-whisper classait certains énoncés courts comme
+  « non-parole » (no_speech_prob > 0.6) et **jetait tout le chunk** → un canal
+  (souvent la sortie système, plus courte) pouvait disparaître de la
+  transcription de façon intermittente. Ne PAS réactiver le VAD/no_speech interne
+  sur les chunks déjà découpés. (Le différé `transcribe_audio.py` garde `vad_filter`
+  car il traite un fichier entier, pas des énoncés pré-découpés.)
+- **Temps réel** : aperçus **interim** pendant qu'on parle
+  (`LIVE_TRANSCRIBE_INTERIM_SEC`, défaut 2 s) — affichés grisés « … » puis
+  remplacés par le final ; ≤1 interim en vol par source (pas de pile-up).
+  `condition_on_previous_text=False` + warmup modèle au démarrage.
+- **Config `.env`** : `LIVE_TRANSCRIBE_MODEL` + `TRANSCRIBE_MODEL` / `_DEVICE` /
+  `_COMPUTE_TYPE` / `_CPU_THREADS` / `_LANGUAGE` (`fr`|`auto`) / `_WINDOW_SEC` /
+  `_INTERIM_SEC`. Aucune dépendance nouvelle (faster-whisper marche en CPU via
+  CTranslate2, **sans torch**).
+
+---
+
 ## Recurring problems
 
 ### WSL2 `/mnt/c/` path disappears mid-session

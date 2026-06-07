@@ -45,24 +45,8 @@ except ImportError:
         shutil.copy(input_file, output_file)
         return output_file
 
-# Map CLI model names to faster-whisper model IDs.
-# large-v3 is the highest quality model; same weights as openai-whisper large-v3.
-# turbo = large-v3-turbo: slightly faster, minimal quality difference.
-MODEL_NAME_MAP = {
-    'tiny':   'tiny',
-    'base':   'base',
-    'small':  'small',
-    'medium': 'medium',
-    'large':  'large-v3',
-    'turbo':  'large-v3-turbo',
-}
-
-def format_srt_time(seconds):
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    millis = int((seconds % 1) * 1000)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+# Modèles + écriture SRT/MD : mutualisés avec live_transcribe.py (formats identiques)
+from whisper_common import MODEL_NAME_MAP, write_srt, write_md
 
 def preprocess_audio(input_file):
     """
@@ -378,47 +362,21 @@ def transcribe_audio(input_file, language='en', no_speaker=False, output_format=
                        for i, spk in enumerate(sorted(set(s["speaker"]
                                                           for s in diarization_segments)))}
 
-    if output_format == 'srt':
-        lines = []
-        for i, w_seg in enumerate(whisper_segments, 1):
-            w_start, w_end = w_seg['start'], w_seg['end']
-            text = w_seg['text'].strip()
-            if diarization_segments:
-                spk  = get_speaker_for_segment(w_start, w_end, diarization_segments, speaker_map)
-                text = f"{spk}: {text}"
-            lines.append(f"{i}\n{format_srt_time(w_start)} --> {format_srt_time(w_end)}\n{text}\n")
-        with open(output_file, 'w') as f:
-            f.write('\n'.join(lines))
-    else:
-        grouped, current = [], {"speaker": None, "text": []}
-        if whisper_segments:
-            first = whisper_segments[0]
-            current["speaker"] = (
-                get_speaker_for_segment(first['start'], first['end'],
-                                        diarization_segments, speaker_map)
-                if diarization_segments else "Text"
-            )
-        for w_seg in whisper_segments:
-            w_start, w_end = w_seg['start'], w_seg['end']
-            spk = (get_speaker_for_segment(w_start, w_end, diarization_segments, speaker_map)
-                   if diarization_segments else "Text")
-            if spk == current["speaker"] or (spk == "Unknown"
-                                              and current["speaker"] != "Unknown"):
-                current["text"].append(w_seg['text'].strip())
-            else:
-                if current["text"]:
-                    grouped.append(current)
-                current = {"speaker": spk, "text": [w_seg['text'].strip()]}
-        if current["text"]:
-            grouped.append(current)
+    # Construit la liste {start,end,label,text} puis délègue au writer partagé,
+    # de sorte que le format soit STRICTEMENT identique à la transcription live.
+    # label = locuteur (diarisation) sinon '' (texte simple, sans préfixe).
+    segs = []
+    for w_seg in whisper_segments:
+        label = (get_speaker_for_segment(w_seg['start'], w_seg['end'],
+                                         diarization_segments, speaker_map)
+                 if diarization_segments else '')
+        segs.append({'start': w_seg['start'], 'end': w_seg['end'],
+                     'label': label, 'text': w_seg['text'].strip()})
 
-        lines = [
-            f"**{g['speaker']}**: {' '.join(g['text'])}" if g["speaker"]
-            else ' '.join(g['text'])
-            for g in grouped
-        ]
-        with open(output_file, 'w') as f:
-            f.write("# Transcription\n\n" + '\n\n'.join(lines))
+    if output_format == 'srt':
+        write_srt(output_file, segs)
+    else:
+        write_md(output_file, segs)
 
     # Remove cache files quietly
     for cache_file in [whisper_cache, diarization_cache]:

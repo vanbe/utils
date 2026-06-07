@@ -15,6 +15,7 @@ import argparse
 import tty
 import termios
 import select as _sel_mod
+import threading
 import time
 import glob
 from datetime import datetime
@@ -36,6 +37,11 @@ _DOC_UTILS   = os.path.join(_ACTIONS, 'document_utils')
 _PIC_UTILS   = os.path.join(_ACTIONS, 'picture_utils')
 _AI_UTILS    = os.path.join(_ACTIONS, 'ai_utils')
 _DEV_UTILS   = os.path.join(_ACTIONS, 'dev_utils')
+
+# Moteur de capture audio multi-sources (actions/audio_utils/recorder.py).
+sys.path.insert(0, _AUDIO_UTILS)
+import recorder  # noqa: E402
+from whisper_common import recommended_model  # noqa: E402  (modèle conseillé machine)
 
 # ---------------------------------------------------------------------------
 # ANSI
@@ -224,6 +230,112 @@ def _clear_block(count: int):
         sys.stdout.write('\r' + _EOL + '\n')
     sys.stdout.write(f'\033[{count}F')   # back to top of cleared block
     sys.stdout.flush()
+
+
+def multiselect_menu(
+    items: list,            # str or (label, hint) ; label may contain ANSI codes
+    title:    str = '',
+    subtitle: str = '',
+    headers:  set = None,   # indices that are non-selectable group headers
+    preselected: set = None,
+) -> list | None:
+    """
+    Arrow-key list where Space toggles a checkbox on each selectable row.
+    Returns the list of checked indices (Enter), or None on Esc/back.
+    Raises SystemExit(0) on Q. Mirrors select_menu's rendering/raw-mode handling.
+    """
+    n = len(items)
+    if n == 0:
+        return None
+
+    hdrs = headers or set()
+    checked = set(preselected or set())
+
+    idx = 0
+    while idx in hdrs and idx < n - 1:
+        idx += 1
+
+    def _skip(i, delta):
+        j, steps = (i + delta) % n, 0
+        while j in hdrs and steps < n:
+            j = (j + delta) % n
+            steps += 1
+        return j
+
+    def _make_lines():
+        out = ['']
+        if title:    out.append(f'  {bold(title)}')
+        if subtitle: out.append(f'  {dim(subtitle)}')
+        out.append(f'  {_bar()}')
+        out.append('')
+        for i, item in enumerate(items):
+            label = item[0] if isinstance(item, (list, tuple)) else item
+            if i in hdrs:
+                out.append(f'  {label}')
+                continue
+            hint = (item[1] if isinstance(item, (list, tuple)) and len(item) > 1 else '') or ''
+            box = f'{_GRN}[x]{_R}' if i in checked else f'{_GRY}[ ]{_R}'
+            cursor = f'{_CYN}▶{_R}' if i == idx else ' '
+            row = f'  {cursor} {box} {label}'
+            if hint:
+                row += f'  {_GRY}{hint}{_R}'
+            out.append(row)
+        out.append('')
+        out.append(f'  {_bar()}')
+        out.append(f'  {_GRY}↑↓ navigate · Space toggle · Enter confirm · Esc/← back · Q quit{_R}')
+        out.append('')
+        return out
+
+    fd  = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    sys.stdout.write(_HIDE)
+    sys.stdout.flush()
+
+    lines = _make_lines()
+    for line in lines:
+        sys.stdout.write('\r' + line + _EOL + '\n')
+    sys.stdout.flush()
+    count = len(lines)
+
+    result = None
+    try:
+        tty.setraw(fd)
+        while True:
+            key = _read_key(fd)
+            if key == 'up':
+                idx = _skip(idx, -1)
+            elif key == 'down':
+                idx = _skip(idx, 1)
+            elif key == 'char: ':            # space toggles
+                if idx not in hdrs:
+                    checked.symmetric_difference_update({idx})
+            elif key == 'enter':
+                result = sorted(checked)
+                break
+            elif key in ('esc', 'left'):
+                result = None
+                break
+            elif key == 'quit':
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+                _clear_block(count)
+                sys.stdout.write(_SHOW)
+                sys.stdout.flush()
+                sys.exit(0)
+            else:
+                continue
+
+            new_lines = _make_lines()
+            sys.stdout.write(f'\033[{count}F')
+            for line in new_lines:
+                sys.stdout.write('\r' + line + _EOL + '\n')
+            sys.stdout.flush()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        _clear_block(count)
+        sys.stdout.write(_SHOW)
+        sys.stdout.flush()
+
+    return result
 
 # ---------------------------------------------------------------------------
 # Text input helpers
@@ -506,14 +618,19 @@ def act_transcribe(path: str):
     if lang_idx is None: return
     lang = ['fr', 'en'][lang_idx]
 
-    model_idx = select_menu([
-        ('large',  'best quality                  (default)'),
-        ('turbo',  'faster, near same quality'),
-        ('medium', 'lighter'),
-        ('small',  'fast & light'),
-    ], title='Whisper model')
+    rec = recommended_model('transcribe')   # différé → modèle qualité
+    _models = ['turbo', 'large', 'medium', 'small', 'base', 'tiny']
+    if rec not in _models:
+        _models.insert(0, rec)
+    order = [rec] + [m for m in _models if m != rec]
+    _desc = {'large': 'meilleure qualité, lent', 'turbo': 'rapide, qualité quasi-large',
+             'medium': 'compromis', 'small': 'rapide et léger',
+             'base': 'très léger', 'tiny': 'minimal'}
+    model_idx = select_menu(
+        [(m, ('(recommandé) ' if m == rec else '') + _desc.get(m, '')) for m in order],
+        title='Whisper model')
     if model_idx is None: return
-    model = ['large', 'turbo', 'medium', 'small'][model_idx]
+    model = order[model_idx]
 
     fmt_idx = select_menu([
         ('Markdown .md',  'with speaker labels  (default)'),
@@ -685,6 +802,336 @@ def act_extract_audio(path: str):
               '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11,highpass=f=80,lowpass=f=15000',
               imp_out)
     _show_result(rc, imp_out)
+    pause()
+
+
+# ---------------------------------------------------------------------------
+# Record audio — multi-source capture (micros + system output) → FLAC multicanal
+# ---------------------------------------------------------------------------
+
+def _fmt_dur(sec: float) -> str:
+    sec = int(sec)
+    h, m, s = sec // 3600, (sec % 3600) // 60, sec % 60
+    if h: return f'{h}h {m:02d}m {s:02d}s'
+    if m: return f'{m}m {s:02d}s'
+    return f'{s}s'
+
+
+def _mmss(sec: float) -> str:
+    sec = int(sec)
+    return f'{sec // 60:02d}:{sec % 60:02d}'
+
+
+_TRANSCRIPT_H = 10   # hauteur fixe de la zone transcript (lignes constantes)
+
+
+def _fmt_seg(seg, partial: bool = False) -> str:
+    width = max(20, _term_width() - 4)
+    prefix = f'[{_mmss(seg["start"])}] {seg["label"]}: '
+    avail = max(8, width - len(prefix) - 2)
+    text = seg['text']
+    if len(text) > avail:
+        text = text[:avail - 1] + '…'
+    if partial:   # aperçu en cours → tout grisé + « … »
+        return f'  {_GRY}[{_mmss(seg["start"])}] {seg["label"]}: {text} …{_R}'
+    color = _GRN if seg['kind'] == 'input' else _MGT
+    return f'  {_GRY}[{_mmss(seg["start"])}]{_R} {color}{seg["label"]}{_R}: {text}'
+
+
+def _transcript_lines(transcript) -> list:
+    """Zone transcript (hauteur fixe). `transcript` = (state, lock) ;
+    state = {'final': [segs], 'partial': {source_idx: seg}}."""
+    out = [f'  {_bar()}', f'  {bold("Transcript (live)")}  {dim("· … = en cours")}']
+    state, lock = transcript
+    with lock:
+        finals = list(state['final'])
+        partials = list(state['partial'].values())
+    display = [_fmt_seg(s, False) for s in finals]
+    display += [_fmt_seg(s, True)
+                for s in sorted(partials, key=lambda s: s.get('source_idx', 0))]
+    display = display[-_TRANSCRIPT_H:]
+    out += display
+    out += [''] * (_TRANSCRIPT_H - len(display))
+    return out
+
+
+def _meter(level: float, width: int = 28) -> str:
+    # RMS → sqrt scaling pour rendre les niveaux faibles visibles
+    disp = max(0.0, min(1.0, level ** 0.5))
+    filled = int(disp * width)
+    color = _GRN if disp < 0.7 else (_YEL if disp < 0.9 else _RED)
+    return f'{color}{"█" * filled}{_R}{_GRY}{"░" * (width - filled)}{_R}'
+
+
+def _record_lines(rec, sources, out_path, transcript=None) -> list:
+    lines = ['']
+    status = warn('⏸ PAUSE') if rec.paused else err('● REC')
+    lines.append(f'  {bold("Recording")}   {status}')
+    fname = os.path.basename(out_path)
+    if len(fname) > 44:
+        fname = fname[:43] + '…'
+    lines.append(f'  {dim("File:")}  {hi(fname)}')
+    lines.append(f'  {dim("Time:")}  {bold(_fmt_dur(rec.elapsed()))}'
+                 f'    {dim("Size:")} {_size(out_path) or "—"}'
+                 f'    {dim("Format:")} {rec.rate} Hz · {rec.total_channels}ch FLAC')
+    lines.append(f'  {_bar()}')
+    levels = rec.levels()
+    for i, s in enumerate(sources):
+        lvl = levels[i] if i < len(levels) else 0.0
+        tag = f'{_GRN}IN {_R}' if s['kind'] == 'input' else f'{_MGT}OUT{_R}'
+        name = s['name'] if len(s['name']) <= 26 else s['name'][:25] + '…'
+        lines.append(f'  [{tag}] {name:<26} {_meter(lvl)}')
+    if transcript is not None:
+        lines += _transcript_lines(transcript)
+    lines.append(f'  {_bar()}')
+    lines.append(f'  {_GRY}Space pause/resume · S/Enter stop · Esc/Q cancel{_R}')
+    lines.append('')
+    return lines
+
+
+def _record_live(rec, sources, out_path, transcript=None) -> str:
+    """Écran live raw-mode. Retourne 'stopped' ou 'cancelled'."""
+    fd  = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    sys.stdout.write(_HIDE)
+    sys.stdout.flush()
+    count = 0
+    result = 'stopped'
+    try:
+        tty.setraw(fd)
+        rec.start()
+        first = True
+        while True:
+            lines = _record_lines(rec, sources, out_path, transcript)
+            if not first:
+                sys.stdout.write(f'\033[{count}F')
+            for line in lines:
+                sys.stdout.write('\r' + line + _EOL + '\n')
+            sys.stdout.flush()
+            count = len(lines)
+            first = False
+
+            if not rec.is_alive():           # ffmpeg/capture terminé tout seul
+                break
+
+            ready, _, _ = _sel_mod.select([sys.stdin], [], [], 0.1)
+            if not ready:
+                continue
+            key = _read_key(fd)
+            if key == 'enter' or key in ('char:s', 'char:S'):
+                break
+            if key == 'char: ':
+                rec.resume() if rec.paused else rec.pause()
+            elif key in ('esc', 'quit'):
+                result = 'cancelled'
+                break
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        _clear_block(count)
+        sys.stdout.write(_SHOW)
+        sys.stdout.flush()
+
+    if result == 'cancelled':
+        rec.cancel()
+    else:
+        rec.stop()
+    return result
+
+
+def _ensure_capture_exe(backend: str) -> bool:
+    """Sur WSL, s'assure que capture.exe existe (propose de le construire)."""
+    if backend != 'wsl' or recorder.capture_exe_present():
+        return True
+    print(warn('  Le capteur Windows (capture.exe) est absent — il n\'est pas versionné.'))
+    idx = select_menu([
+        ('Construire maintenant', 'cross-compile via mingw (build.sh)'),
+        ('Annuler', ''),
+    ], title='capture.exe manquant')
+    if idx != 0:
+        return False
+    print(dim('\n  Construction de capture.exe…'))
+    okb, log = recorder.build_capture()
+    print()
+    if okb:
+        print(ok('  ✓ capture.exe construit.'))
+        return True
+    print(err('  ✗ Build échoué.'))
+    if log:
+        print(dim('  ' + log.replace('\n', '\n  ')))
+    print(dim('  → installer le toolchain : sudo apt-get install g++-mingw-w64-x86-64'))
+    print(dim('    (ou compiler sur Windows : actions/audio_utils/capture/build.bat)'))
+    pause()
+    return False
+
+
+def act_record_audio(dirpath: str):
+    print(f'\n  {bold("Record audio")}  {dim(dirpath)}\n')
+    backend = recorder.detect_backend()
+
+    if not _ensure_capture_exe(backend):
+        return
+
+    sources = recorder.list_sources(backend)
+    if not sources:
+        hint = ('capture.exe --list vide ?' if backend == 'wsl'
+                else 'serveur PulseAudio absent ?')
+        print(warn(f'  Aucune source audio détectée ({hint})'))
+        pause()
+        return
+
+    # Multi-sélection groupée Entrées / Sorties
+    inputs  = [s for s in sources if s['kind'] == 'input']
+    outputs = [s for s in sources if s['kind'] == 'output']
+    items, headers, meta = [], set(), []
+    if inputs:
+        headers.add(len(items)); items.append((f'{_GRN}ENTRÉES (micros){_R}', '')); meta.append(None)
+        for s in inputs:
+            items.append((s['name'], f"{s['channels']}ch")); meta.append(s)
+    if outputs:
+        headers.add(len(items)); items.append((f'{_MGT}SORTIES (système){_R}', '')); meta.append(None)
+        for s in outputs:
+            items.append((s['name'], f"{s['channels']}ch")); meta.append(s)
+
+    sel = multiselect_menu(items, title='Sources à capturer',
+                           subtitle='Espace pour (dé)cocher · Entrée pour valider',
+                           headers=headers)
+    if not sel:
+        return
+    chosen = [meta[i] for i in sel if meta[i] is not None]
+    if not chosen:
+        print(warn('  Aucune source sélectionnée.'))
+        pause()
+        return
+
+    # Transcription live (optionnelle)
+    t_idx = select_menu([
+        ('Non', 'enregistrement seul (défaut)'),
+        ('Oui', 'transcription live par canal (Moi / Système)'),
+    ], title='Transcription live ?')
+    if t_idx is None:
+        return
+    want_trans = (t_idx == 1)
+    language, model = 'fr', None
+    if want_trans:
+        l_idx = select_menu([
+            ('FR — Français', 'default'),
+            ('EN — English', ''),
+            ('Auto', 'détection automatique'),
+        ], title='Langue')
+        if l_idx is None:
+            return
+        language = ['fr', 'en', 'auto'][l_idx]
+        rec = recommended_model('live')      # live → modèle temps réel
+        m_idx = select_menu([
+            (f'Recommandé — {rec}', '(recommandé) · live temps réel (.env)'),
+            ('turbo', 'rapide, qualité quasi-large'),
+            ('medium', 'compromis'),
+            ('small', 'léger'),
+            ('large', 'meilleure qualité, plus lent'),
+        ], title='Modèle Whisper')
+        if m_idx is None:
+            return
+        # None → LiveTranscriber lit LIVE_TRANSCRIBE_MODEL (= le recommandé)
+        model = [None, 'turbo', 'medium', 'small', 'large'][m_idx]
+
+    default_base = recorder.default_basename()
+    name = ask('Nom du fichier', default_base) or default_base
+    if name.lower().endswith('.flac'):
+        name = name[:-5]
+    out_path = recorder.unique_path(dirpath, name, 'flac')
+
+    details = [
+        ('Folder',   dirpath),
+        ('Sources',  ', '.join(s['name'] for s in chosen)),
+        ('Channels', str(sum(int(s['channels']) for s in chosen))),
+        ('File',     os.path.basename(out_path)),
+    ]
+    if want_trans:
+        details.append(('Transcription', f'live · {language} · {model or "défaut (.env)"}'))
+    if not confirm(details):
+        return
+
+    try:
+        rec = recorder.Recorder(chosen, out_path, backend=backend)
+    except Exception as e:
+        print(err(f'  ✗ {e}'))
+        pause()
+        return
+
+    transcriber = None
+    transcript = None
+    if want_trans:
+        try:
+            import live_transcribe
+        except Exception as e:
+            print(err(f'  ✗ Module transcription indisponible : {e}'))
+            pause()
+            return
+        t_state = {'final': [], 'partial': {}}
+        t_lock = threading.Lock()
+        transcript = (t_state, t_lock)
+
+        def _on_seg(seg, _st=t_state, _lk=t_lock):
+            with _lk:
+                if seg.get('interim'):
+                    _st['partial'][seg['source_idx']] = seg
+                else:
+                    _st['final'].append(seg)
+                    _st['partial'].pop(seg['source_idx'], None)
+
+        srt_path = os.path.splitext(out_path)[0] + '.srt'
+        try:
+            transcriber = live_transcribe.LiveTranscriber(
+                rec.channel_map(), _on_seg, srt_path,
+                language=language, model_name=model)
+        except Exception as e:
+            print(err(f'  ✗ {e}'))
+            pause()
+            return
+        rec.on_pcm = transcriber.feed_bytes
+        print(dim(f'  Chargement du modèle Whisper ({transcriber.model_name})…'))
+        try:
+            transcriber.start()
+        except Exception as e:
+            print(err(f'  ✗ Modèle : {e}'))
+            pause()
+            return
+
+    try:
+        result = _record_live(rec, chosen, out_path, transcript)
+    except Exception as e:
+        rec.cancel()
+        if transcriber:
+            transcriber.finalize()
+        print(err(f"  ✗ Erreur durant l'enregistrement : {e}"))
+        pause()
+        return
+
+    if transcriber:
+        print(dim('\n  Finalisation de la transcription…'))
+        transcriber.finalize()
+
+    print()
+    stem = os.path.splitext(os.path.basename(out_path))[0]
+    if result == 'cancelled':
+        print(warn('  Enregistrement annulé (fichier supprimé).'))
+        if transcriber:
+            for ext in ('.srt', '.md'):
+                try:
+                    os.remove(os.path.splitext(out_path)[0] + ext)
+                except OSError:
+                    pass
+    elif os.path.exists(out_path):
+        print(ok('  ✓ Enregistré.') + f'  {dim("→")} {hi(os.path.basename(out_path))}')
+        side = stem + '.channels.json'
+        extra = ''
+        if transcriber:
+            n = len(transcriber.segments_snapshot())
+            extra = f' · transcript {stem}.srt + {stem}.md ({n} segments)'
+        print(dim(f'  Durée {_fmt_dur(rec.elapsed())} · {_size(out_path)} · '
+                  f'{rec.total_channels} canaux · sidecar {side}{extra}'))
+    else:
+        print(err('  ✗ Aucun fichier produit (capture/ffmpeg en échec ?).'))
     pause()
 
 
@@ -1496,6 +1943,7 @@ _ACTION_CAT = {
     'Vision OCR':                 'AI',
     'MinerU OCR':                 'AI',
     'Transcribe':                 'Audio',
+    'Record audio':               'Audio',
     'Extract audio':              'Audio',
     'Convert to MP3':             'Audio',
     'Improve quality':            'Audio',
@@ -1560,6 +2008,7 @@ def _actions_for(path: str) -> list[tuple[str, str, callable]]:
         except:
             exts = set()
         acts.append(('Chat with AI',      'interactive chat — saved to Markdown', act_chat_model))
+        acts.append(('Record audio',      'capture micro + sortie → FLAC multicanal', act_record_audio))
         acts.append(('Git Pull All',      'pull every git repo found recursively', act_git_pull_all))
         if '.pdf' in exts:
             acts.append(('Merge PDFs',        'combine all .pdf files in folder',      act_merge_pdf))
@@ -1657,7 +2106,8 @@ def action_menu(path: str):
 # ---------------------------------------------------------------------------
 
 _AUTO_KEYS = {'OMP_NUM_THREADS', 'THUMBNAIL_MAX_GPU_SESSIONS',
-              'THUMBNAIL_NUM_CORES', 'RAW_TO_JPG_NUM_CORES'}
+              'THUMBNAIL_NUM_CORES', 'RAW_TO_JPG_NUM_CORES',
+              'LIVE_TRANSCRIBE_MODEL', 'TRANSCRIBE_MODEL'}
 
 def _maybe_setup_env():
     """Run setup_env.py if any auto-detected keys are missing from .env."""

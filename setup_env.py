@@ -189,6 +189,40 @@ def _compute_defaults(h: HardwareProfile) -> dict[str, tuple[str, str]]:
         f'CPU cores for parallel RAW→JPEG conversion'
     )
 
+    # --- Transcription Whisper (live "Record audio" + différé "Transcribe") ---
+    # Modèles RECOMMANDÉS calculés selon le matériel :
+    #  - live  : doit tenir le TEMPS RÉEL (RTF<1) en gardant l'hôte réactif.
+    #  - différé: pas de contrainte temps réel → on peut viser la MEILLEURE qualité.
+    # Sur GPU, turbo (≈ qualité large) suffit pour les deux. Sur CPU on allège le
+    # live (base = temps réel) et on garde un modèle plus fort pour le différé.
+    cuda, vram = h.has_cuda, h.gpu_vram_mb
+    if cuda and vram >= 10000:
+        live_model, transcribe_model, device, compute = 'turbo', 'large', 'cuda', 'float16'
+    elif cuda and vram >= 5000:
+        live_model, transcribe_model, device, compute = 'turbo', 'turbo', 'cuda', 'float16'
+    elif cuda and vram >= 3000:
+        live_model, transcribe_model, device, compute = 'small', 'small', 'cuda', 'int8_float16'
+    else:
+        live_model, transcribe_model, device, compute = 'base', 'small', 'cpu', 'int8'
+    live_threads = max(1, cores - 1)   # laisse 1 cœur à l'hôte (réactivité)
+
+    d['LIVE_TRANSCRIBE_MODEL'] = (
+        live_model,
+        f'Modèle Whisper RECOMMANDÉ pour le LIVE (temps réel)  '
+        f'({h.gpu_name or "CPU"}, {vram} MB VRAM — un seul modèle partagé)'
+    )
+    d['TRANSCRIBE_MODEL'] = (
+        transcribe_model,
+        'Modèle RECOMMANDÉ pour la transcription DIFFÉRÉE (qualité, sans contrainte temps réel)'
+    )
+    d['LIVE_TRANSCRIBE_DEVICE']       = (device,  'cuda | cpu')
+    d['LIVE_TRANSCRIBE_COMPUTE_TYPE'] = (compute, 'float16 | int8_float16 | int8')
+    d['LIVE_TRANSCRIBE_CPU_THREADS']  = (str(live_threads),
+        f'threads CPU du live ({cores} cœurs − 1 → hôte réactif ; ignoré sur GPU)')
+    d['LIVE_TRANSCRIBE_LANGUAGE']     = ('fr',  "langue fixe (fiable en live) ; 'auto' = détection")
+    d['LIVE_TRANSCRIBE_WINDOW_SEC']   = ('15',  "longueur max d'un énoncé avant flush vers Whisper")
+    d['LIVE_TRANSCRIBE_INTERIM_SEC']  = ('2',   'aperçus temps réel toutes les N s (0 = désactivé)')
+
     return d
 
 
