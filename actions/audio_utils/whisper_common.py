@@ -51,6 +51,22 @@ def recommended_model(role: str = 'live') -> str:
     return _env_or_dotenv('LIVE_TRANSCRIBE_MODEL') or 'turbo'
 
 
+def channel_labels(sources: list) -> dict:
+    """source_index → libellé locuteur. micro → 'Moi', sortie → 'Système'.
+    `sources` = liste de dicts avec au moins {'index', 'kind'} (cf. channel_map).
+    Partagé entre live_transcribe.py (live) et transcribe_channels.py (différé)
+    pour que l'attribution par canal soit STRICTEMENT identique des deux côtés."""
+    labels, n_in, n_out = {}, 0, 0
+    for s in sources:
+        if s['kind'] == 'input':
+            n_in += 1
+            labels[s['index']] = 'Moi' if n_in == 1 else f'Moi {n_in}'
+        else:
+            n_out += 1
+            labels[s['index']] = 'Système' if n_out == 1 else f'Système {n_out}'
+    return labels
+
+
 def format_srt_time(seconds: float) -> str:
     if seconds < 0:
         seconds = 0

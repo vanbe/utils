@@ -24,7 +24,8 @@ import time
 import numpy as np
 
 # Code Whisper partagé avec transcribe_audio.py (table modèles, load, SRT/MD)
-from whisper_common import load_whisper_model, write_srt, write_md
+# et labels par canal (mutualisés avec transcribe_channels.py → mêmes libellés).
+from whisper_common import load_whisper_model, write_srt, write_md, channel_labels
 
 # Charge les réglages .env (LIVE_TRANSCRIBE_*) — même source que transcribe_audio.py
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -46,19 +47,6 @@ def _env(name: str, default: str = '') -> str:
     return os.environ.get(name, default).strip()
 
 
-def _labels_for(sources: list) -> dict:
-    """source_idx → libellé locuteur. micro → 'Moi', sortie → 'Système'."""
-    labels, n_in, n_out = {}, 0, 0
-    for s in sources:
-        if s['kind'] == 'input':
-            n_in += 1
-            labels[s['index']] = 'Moi' if n_in == 1 else f'Moi {n_in}'
-        else:
-            n_out += 1
-            labels[s['index']] = 'Système' if n_out == 1 else f'Système {n_out}'
-    return labels
-
-
 class _SourceGate:
     """État VAD/énoncé d'une source."""
     def __init__(self):
@@ -76,7 +64,7 @@ class LiveTranscriber:
         self.rate = int(channel_map['rate'])
         self.total_channels = int(channel_map['total_channels'])
         self.sources = channel_map['sources']
-        self.labels = _labels_for(self.sources)
+        self.labels = channel_labels(self.sources)
         self.on_segment = on_segment
         self.srt_path = srt_path
         self.md_path = os.path.splitext(srt_path)[0] + '.md'   # version sans timings

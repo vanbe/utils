@@ -607,9 +607,57 @@ def _cmd(*args) -> int:
 # Actions — Video
 # ---------------------------------------------------------------------------
 
+def _act_transcribe_channels(path: str):
+    """Transcription différée *par canal* d'un FLAC + sidecar channels.json
+    (Moi / Système connus par construction → pas de diarisation). Sorties
+    <base>.srt + <base>.md, identiques au live."""
+    name = os.path.basename(path)
+    lang_idx = select_menu([
+        ('FR — Français', 'default'),
+        ('EN — English',  ''),
+        ('Auto',          'détection automatique'),
+    ], title='Langue')
+    if lang_idx is None: return
+    lang = ['fr', 'en', 'auto'][lang_idx]
+
+    rec = recommended_model('transcribe')
+    _models = ['turbo', 'large', 'medium', 'small', 'base', 'tiny']
+    order = [rec] + [m for m in _models if m != rec]
+    _desc = {'large': 'meilleure qualité, lent', 'turbo': 'rapide, qualité quasi-large',
+             'medium': 'compromis', 'small': 'rapide et léger',
+             'base': 'très léger', 'tiny': 'minimal'}
+    m_idx = select_menu(
+        [(m, ('(recommandé) ' if m == rec else '') + _desc.get(m, '')) for m in order],
+        title='Modèle Whisper')
+    if m_idx is None: return
+    model = order[m_idx]
+
+    base = os.path.splitext(name)[0]
+    if not confirm([('File', name), ('Mode', 'par canal (Moi / Système)'),
+                    ('Langue', lang), ('Modèle', model),
+                    ('Output', f'{base}.srt + {base}.md')]):
+        return
+    print()
+    rc = _py(os.path.join(_AUDIO_UTILS, 'transcribe_channels.py'),
+             path, '--language', lang, '--model', model)
+    _show_result(rc, os.path.join(os.path.dirname(path), base + '.md'))
+    pause()
+
+
 def act_transcribe(path: str):
     name = os.path.basename(path)
     print(f'\n  {bold("Transcribe")}  {dim(name)}\n')
+
+    # FLAC multicanal issu de « Record audio » → propose la transcription par
+    # canal (attribution Moi/Système exacte, sans diarisation).
+    if os.path.exists(os.path.splitext(path)[0] + '.channels.json'):
+        mode_idx = select_menu([
+            ('Par canal — Moi / Système', '(recommandé) via channels.json'),
+            ('Standard — diarisation',    'downmix + détection des locuteurs'),
+        ], title='Mode de transcription')
+        if mode_idx is None: return
+        if mode_idx == 0:
+            return _act_transcribe_channels(path)
 
     lang_idx = select_menu([
         ('FR — French',  'default'),
@@ -670,7 +718,9 @@ def act_transcribe(path: str):
     if imp_idx is None: return
 
     base = os.path.splitext(name)[0]
-    out  = os.path.join(os.path.dirname(path), f'{base}.{fmt}')
+    # transcribe_audio.py écrit toujours « <base>_transcription.<fmt> » — refléter
+    # le vrai nom (sinon _show_result annonce un fichier qui n'existe pas).
+    out  = os.path.join(os.path.dirname(path), f'{base}_transcription.{fmt}')
 
     details = [
         ('File',              name),
@@ -863,7 +913,7 @@ def _meter(level: float, width: int = 28) -> str:
     return f'{color}{"█" * filled}{_R}{_GRY}{"░" * (width - filled)}{_R}'
 
 
-def _record_lines(rec, sources, out_path, transcript=None) -> list:
+def _record_lines(rec, sources, out_path, transcript=None, confirming=False) -> list:
     lines = ['']
     status = warn('⏸ PAUSE') if rec.paused else err('● REC')
     lines.append(f'  {bold("Recording")}   {status}')
@@ -875,7 +925,9 @@ def _record_lines(rec, sources, out_path, transcript=None) -> list:
                  f'    {dim("Size:")} {_size(out_path) or "—"}'
                  f'    {dim("Format:")} {rec.rate} Hz · {rec.total_channels}ch FLAC')
     lines.append(f'  {_bar()}')
-    levels = rec.levels()
+    # En pause, la capture est gelée (SIGSTOP) → pas de nouveaux niveaux : on
+    # affiche 0 plutôt que de laisser les barres figées sur la dernière valeur.
+    levels = [0.0] * len(sources) if rec.paused else rec.levels()
     for i, s in enumerate(sources):
         lvl = levels[i] if i < len(levels) else 0.0
         tag = f'{_GRN}IN {_R}' if s['kind'] == 'input' else f'{_MGT}OUT{_R}'
@@ -884,7 +936,12 @@ def _record_lines(rec, sources, out_path, transcript=None) -> list:
     if transcript is not None:
         lines += _transcript_lines(transcript)
     lines.append(f'  {_bar()}')
-    lines.append(f'  {_GRY}Space pause/resume · S/Enter stop · Esc/Q cancel{_R}')
+    if confirming:
+        lines.append(f'  {err("Supprimer cet enregistrement ?")}  '
+                     f'{bold("O")}=oui (supprime)  ·  {bold("N")}=non (continue)')
+    else:
+        lines.append(f'  {_GRY}Space pause/resume · S/Enter stop & save · '
+                     f'Esc/Q annuler{_R}')
     lines.append('')
     return lines
 
@@ -897,12 +954,14 @@ def _record_live(rec, sources, out_path, transcript=None) -> str:
     sys.stdout.flush()
     count = 0
     result = 'stopped'
+    confirming = False        # Esc/Q armé → on demande confirmation avant suppression
     try:
         tty.setraw(fd)
         rec.start()
         first = True
         while True:
-            lines = _record_lines(rec, sources, out_path, transcript)
+            lines = _record_lines(rec, sources, out_path, transcript,
+                                  confirming=confirming)
             if not first:
                 sys.stdout.write(f'\033[{count}F')
             for line in lines:
@@ -918,13 +977,27 @@ def _record_live(rec, sources, out_path, transcript=None) -> str:
             if not ready:
                 continue
             key = _read_key(fd)
+            if confirming:
+                # Suppression destructive → exige un O/oui explicite ; tout le
+                # reste (N, Esc, Espace…) annule la demande et reprend l'enreg.
+                if key in ('char:o', 'char:O', 'char:y', 'char:Y'):
+                    result = 'cancelled'
+                    break
+                confirming = False
+                continue
             if key == 'enter' or key in ('char:s', 'char:S'):
                 break
             if key == 'char: ':
-                rec.resume() if rec.paused else rec.pause()
+                if rec.paused:
+                    rec.resume()
+                else:
+                    rec.pause()
+                    if transcript is not None:   # purge les aperçus « … » figés
+                        _st, _lk = transcript
+                        with _lk:
+                            _st['partial'].clear()
             elif key in ('esc', 'quit'):
-                result = 'cancelled'
-                break
+                confirming = True       # ne supprime pas encore : demande d'abord
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         _clear_block(count)
@@ -1127,7 +1200,8 @@ def act_record_audio(dirpath: str):
         extra = ''
         if transcriber:
             n = len(transcriber.segments_snapshot())
-            extra = f' · transcript {stem}.srt + {stem}.md ({n} segments)'
+            extra = (f' · transcript {stem}.srt + {stem}.md ({n} segments)' if n
+                     else ' · transcription vide (aucune parole détectée)')
         print(dim(f'  Durée {_fmt_dur(rec.elapsed())} · {_size(out_path)} · '
                   f'{rec.total_channels} canaux · sidecar {side}{extra}'))
     else:

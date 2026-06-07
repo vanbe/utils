@@ -55,6 +55,12 @@ The single source of truth for the registries is `utils_run.py` — `_REGISTRY` 
 - No mode-selection prompt on startup — go straight into the file browser.
 - Folder actions are accessible via the `[./]` entry inside the browser; no separate mode needed.
 - TTS speaking speed: 0.95 is default and must appear first in the speed menu.
+- **Actions destructives en raw-mode** : l'écran live de *Record audio* exige une
+  **confirmation O/oui** avant d'annuler-supprimer (Esc/Q n'efface pas directement
+  le FLAC). En pause, les vumètres retombent à 0 et les aperçus interim « … » sont
+  purgés (la capture est gelée par SIGSTOP, aucune donnée fraîche). Le nombre de
+  lignes rendues doit rester constant entre les états (REC/PAUSE/confirm) pour que
+  le redraw par `\033[NF` ne dérive pas.
 
 ---
 
@@ -136,8 +142,9 @@ the paging cliff by several layers.
 ## Audio recording (action "Record audio")
 
 Capture multi-sources (micros + sorties système) → **un seul FLAC multicanal** +
-sidecar `<name>.channels.json` (map canal→source). Première étape vers la
-transcription par canal (`transcribe_audio.py`). **Action de dossier, TUI-only.**
+sidecar `<name>.channels.json` (map canal→source). Transcription par canal en
+direct (`live_transcribe.py`) ou différée (`transcribe_channels.py`). **Action de
+dossier, TUI-only.**
 
 - **Moteur** : `actions/audio_utils/recorder.py` — `detect_backend()`,
   `list_sources()`, `class Recorder`. Backend-aware :
@@ -159,8 +166,17 @@ transcription par canal (`transcribe_audio.py`). **Action de dossier, TUI-only.*
   + `_ACTION_CAT` de `utils_tools.py`, mais **PAS** dans `_REGISTRY`/
   `_FOLDER_REGISTRY` de `utils_run.py` ni dans `SKILL.md` (enregistrement live =
   interactif). Ne pas la croire « manquante » lors d'une passe de sync registries.
-- **Démux** : `ffmpeg -i in.flac -filter_complex "pan=mono|c0=cK"` extrait le
-  canal K (cf. `channels.json`) → `transcribe_audio.py` par canal.
+- **Démux + transcription différée par canal** : `transcribe_channels.py` lit le
+  sidecar `channels.json`, démux chaque source (`pan=mono|c0=…` = **moyenne** des
+  canaux de la source, pas seulement `c0`), transcrit par canal et fusionne →
+  `<base>.srt` + `<base>.md`. **Attribution Moi/Système par construction** (pas de
+  pyannote). Câblé dans la TUI : `act_transcribe` détecte le sidecar et propose
+  « Par canal » (recommandé) vs « Standard — diarisation » (`transcribe_audio.py`,
+  qui downmix tout en mono + diarise). ⚠ Ne PAS passer un FLAC multicanal au mode
+  standard sans raison : son préprocess `pan=mono|c0=c0` ne garde que le 1er canal.
+- **Labels par canal mutualisés** : `whisper_common.channel_labels(sources)` est
+  l'unique source des libellés « Moi / Système » — utilisé par `live_transcribe.py`
+  ET `transcribe_channels.py` (donc live ≡ différé par canal).
 
 ### Transcription live par canal
 
