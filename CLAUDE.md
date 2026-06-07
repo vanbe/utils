@@ -214,6 +214,16 @@ en direct, affichage défilant (`Moi` / `Système`) + `.srt` aligné sur le FLAC
   gagne rien et **2 modèles turbo ne tiennent pas en 6 Go** + DWM Windows. VAD-gate
   → micro muet = coût nul. faster-whisper n'est pas streaming → **chunk-on-silence**.
 - **Sorties** : `.srt` (avec timings) **et** `.md` (sans timings) par défaut.
+- **Réhaussement audio dégradé (capté de loin / bruyant)** : option `--enhance`
+  (différé seulement) = pré-passage ffmpeg `SPEECH_ENHANCE_FILTERS`
+  (`highpass=80 + afftdn + dynaudnorm`, dans `audio_utils_common.py`, sans
+  dépendance) appliqué avant Whisper. ⚠ La **normalisation** (loudnorm/RMS) ne
+  change PAS le SNR et Whisper normalise déjà → inutile pour de l'audio lointain ;
+  ce qui aide = débruitage (`afftdn`) + remontée dynamique (`dynaudnorm`) + un
+  **modèle qualité en 2ᵉ passe** (le live reste un moniteur `beam=1` temps réel,
+  le différé fait le transcript fiable). Câblé : `transcribe_audio.py --enhance`
+  (menu « Enhance — far-field / noisy »), `transcribe_channels.py --enhance`
+  (menu « Réhaussement audio »). **Pas appliqué en live** (budget temps réel).
 - **Code mutualisé** : `whisper_common.py` (table modèles, chargement+fallback OOM,
   **`write_srt`/`write_md`**) est utilisé par `live_transcribe.py` ET
   `transcribe_audio.py` → le MD live est **identique** au MD différé (même writer).

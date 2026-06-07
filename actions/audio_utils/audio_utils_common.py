@@ -1,6 +1,15 @@
 import os
 import subprocess
 
+# Chaîne ffmpeg de réhaussement pour audio DÉGRADÉ (voix captée de loin, salle
+# bruyante). Contrairement à loudnorm (qui ne change pas le SNR), elle agit sur
+# la clarté : highpass=80 (coupe rumble/HVAC) + afftdn (débruitage FFT) +
+# dynaudnorm (remonte dynamiquement les passages faibles, mieux que loudnorm
+# pour une voix qui varie en distance). 100 % filtres ffmpeg intégrés (aucune
+# dépendance). Mutualisée entre transcribe_audio.py et transcribe_channels.py.
+SPEECH_ENHANCE_FILTERS = "highpass=f=80,afftdn=nr=10:nf=-25,dynaudnorm=f=200:g=15"
+
+
 def improve_audio_quality(input_file, output_file=None):
     """
     Improve audio quality using ffmpeg loudnorm filter.

@@ -632,14 +632,22 @@ def _act_transcribe_channels(path: str):
     if m_idx is None: return
     model = order[m_idx]
 
+    enh_idx = select_menu([
+        ('Non — brut',                          'défaut (canaux numériques propres)'),
+        ('Oui — réhaussé (capté de loin/bruit)', 'débruitage + normalisation dynamique'),
+    ], title='Réhaussement audio')
+    if enh_idx is None: return
+
     base = os.path.splitext(name)[0]
     if not confirm([('File', name), ('Mode', 'par canal (Moi / Système)'),
                     ('Langue', lang), ('Modèle', model),
+                    ('Réhaussement', 'oui (denoise)' if enh_idx == 1 else 'non'),
                     ('Output', f'{base}.srt + {base}.md')]):
         return
     print()
-    rc = _py(os.path.join(_AUDIO_UTILS, 'transcribe_channels.py'),
-             path, '--language', lang, '--model', model)
+    args = [path, '--language', lang, '--model', model]
+    if enh_idx == 1: args.append('--enhance')
+    rc = _py(os.path.join(_AUDIO_UTILS, 'transcribe_channels.py'), *args)
     _show_result(rc, os.path.join(os.path.dirname(path), base + '.md'))
     pause()
 
@@ -713,8 +721,9 @@ def act_transcribe(path: str):
             except ValueError: max_speakers = 0
 
     imp_idx = select_menu([
-        ('Yes — pre-process audio', 'default'),
-        ('No  — skip (faster)',     ''),
+        ('Standard — loudnorm',              'default'),
+        ('Enhance — far-field / noisy',      'denoise + dynamic normalization'),
+        ('None — raw (faster)',              ''),
     ], title='Audio improvement')
     if imp_idx is None: return
 
@@ -733,14 +742,15 @@ def act_transcribe(path: str):
     if spk_idx == 0:
         details.append(('Max speakers', str(max_speakers) if max_speakers else 'auto'))
     details += [
-        ('Audio improve',     'no' if imp_idx == 1 else 'yes'),
+        ('Audio improve',     ('loudnorm', 'enhance (denoise)', 'none')[imp_idx]),
         ('Output',            os.path.basename(out)),
     ]
     if not confirm(details): return
 
     args = [path, '--language', lang, '--model', model, '--output-format', fmt]
     if spk_idx == 1:    args.append('--no-speaker')
-    if imp_idx == 1:    args.append('--no-improve')
+    if imp_idx == 1:    args.append('--enhance')
+    elif imp_idx == 2:  args.append('--no-improve')
     if max_speakers > 0: args += ['--max-speakers', str(max_speakers)]
     print()
     rc = _py(os.path.join(_AUDIO_UTILS, 'transcribe_audio.py'), *args)

@@ -25,27 +25,31 @@ import time
 
 from whisper_common import (load_whisper_model, write_srt, write_md,
                             channel_labels, recommended_model)
+from audio_utils_common import SPEECH_ENHANCE_FILTERS
 
 
 def sidecar_path(flac: str) -> str:
     return os.path.splitext(flac)[0] + '.channels.json'
 
 
-def _demux_channel(flac: str, src: dict, out_wav: str):
-    """Démux la source `src` (moyenne de ses canaux) → mono 16 kHz PCM s16le."""
+def _demux_channel(flac: str, src: dict, out_wav: str, enhance: bool = False):
+    """Démux la source `src` (moyenne de ses canaux) → mono 16 kHz PCM s16le.
+    Si `enhance`, insère le réhaussement (débruitage + dynaudnorm) avant resample."""
     cs, ce = int(src['channel_start']), int(src['channel_end'])
     n = ce - cs
     terms = '+'.join(f'c{c}' for c in range(cs, ce))
     coef = f'({terms})/{n}' if n > 1 else terms        # moyenne si multi-canaux
     pan = f'pan=mono|c0={coef}'
+    af = f'{pan},{SPEECH_ENHANCE_FILTERS},aresample=16000' if enhance \
+        else f'{pan},aresample=16000'
     cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', flac,
-           '-af', f'{pan},aresample=16000', '-ac', '1',
-           '-c:a', 'pcm_s16le', out_wav]
+           '-af', af, '-ac', '1', '-c:a', 'pcm_s16le', out_wav]
     subprocess.run(cmd, check=True)
 
 
 def transcribe_channels(flac: str, language: str = 'fr',
-                        model_size: str | None = None) -> int:
+                        model_size: str | None = None,
+                        enhance: bool = False) -> int:
     sep = '─' * 56
     t_total = time.time()
 
@@ -71,7 +75,8 @@ def transcribe_channels(flac: str, language: str = 'fr',
 
     print(sep)
     print(f'  {os.path.basename(flac)}')
-    print(f'  {len(sources)} canaux  ·  langue: {language}  ·  modèle: {model_size}')
+    print(f'  {len(sources)} canaux  ·  langue: {language}  ·  modèle: {model_size}'
+          f'{"  ·  réhaussé" if enhance else ""}')
     print(sep)
 
     print(f'  [1]  Load Whisper  ({model_size})', end='', flush=True)
@@ -94,7 +99,7 @@ def transcribe_channels(flac: str, language: str = 'fr',
             print(f'  [{i + 1}]  {label or src.get("name", "?")}', end='', flush=True)
             wav = os.path.join(tmp, f'ch{src["index"]}.wav')
             try:
-                _demux_channel(flac, src, wav)
+                _demux_channel(flac, src, wav, enhance=enhance)
             except subprocess.CalledProcessError as e:
                 print(f'   ✗ démux échoué ({e})')
                 continue
@@ -138,5 +143,7 @@ if __name__ == '__main__':
     p.add_argument('--language', default='fr', help='fr | en | auto')
     p.add_argument('--model', default=None,
                    help='tiny|base|small|medium|large|turbo (défaut: recommandé .env)')
+    p.add_argument('--enhance', action='store_true',
+                   help='réhausser un audio dégradé (capté de loin / bruyant)')
     a = p.parse_args()
-    sys.exit(transcribe_channels(' '.join(a.input_file), a.language, a.model))
+    sys.exit(transcribe_channels(' '.join(a.input_file), a.language, a.model, a.enhance))

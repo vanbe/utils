@@ -38,8 +38,9 @@ from faster_whisper import WhisperModel
 
 # Try importing the helper, fallback if not found
 try:
-    from audio_utils_common import improve_audio_quality
+    from audio_utils_common import improve_audio_quality, SPEECH_ENHANCE_FILTERS
 except ImportError:
+    SPEECH_ENHANCE_FILTERS = "highpass=f=80,afftdn=nr=10:nf=-25,dynaudnorm=f=200:g=15"
     def improve_audio_quality(input_file, output_file):
         import shutil
         shutil.copy(input_file, output_file)
@@ -82,6 +83,33 @@ def preprocess_audio(input_file):
     except FileNotFoundError:
         print("Error: 'ffmpeg' command not found.")
         sys.exit(1)
+
+def enhance_audio(input_file):
+    """
+    Réhaussement pour audio dégradé (capté de loin / bruyant) → 16kHz Mono WAV.
+    Débruitage + normalisation dynamique (cf. SPEECH_ENHANCE_FILTERS), en une
+    seule passe ffmpeg. À préférer à loudnorm quand le SNR est mauvais.
+    """
+    print("Enhancing audio (denoise + dynamic normalization → 16kHz Mono WAV)...")
+    base, _ = os.path.splitext(input_file)
+    output_file = f"{base}_enhanced.wav"
+    filter_chain = f"{SPEECH_ENHANCE_FILTERS},aresample=16000,pan=mono|c0=c0"
+    command = [
+        "ffmpeg", "-y", "-i", input_file,
+        "-af", filter_chain,
+        "-c:a", "pcm_s16le",
+        output_file,
+    ]
+    try:
+        subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        return output_file
+    except subprocess.CalledProcessError as e:
+        print(f"Error running FFmpeg: {e}")
+        sys.exit(1)
+    except FileNotFoundError:
+        print("Error: 'ffmpeg' command not found.")
+        sys.exit(1)
+
 
 def convert_to_wav(input_file):
     """
@@ -132,7 +160,8 @@ def get_speaker_for_segment(w_start, w_end, diarization_segments, speaker_map):
     return best_speaker
 
 def transcribe_audio(input_file, language='en', no_speaker=False, output_format='md',
-                     model_size='large', no_improve=False, max_speakers=0):
+                     model_size='large', no_improve=False, max_speakers=0,
+                     enhance=False):
     import contextlib, io, time
 
     _SEP = '─' * 56
@@ -186,9 +215,14 @@ def transcribe_audio(input_file, language='en', no_speaker=False, output_format=
     os.environ["HF_TOKEN"] = hf_token
 
     base, _ = os.path.splitext(input_file)
-    if "_quality_improved" in base or "_converted" in base:
-        base = base.replace("_quality_improved", "").replace("_converted", "")
-    processing_file   = f"{base}_quality_improved.wav" if not no_improve else f"{base}_converted.wav"
+    for marker in ("_quality_improved", "_converted", "_enhanced"):
+        base = base.replace(marker, "")
+    if enhance:
+        processing_file = f"{base}_enhanced.wav"
+    elif no_improve:
+        processing_file = f"{base}_converted.wav"
+    else:
+        processing_file = f"{base}_quality_improved.wav"
     whisper_cache     = f"{base}_whisper_{model_size}_segments.json"
     diarization_cache = f"{base}_diarization_segments.json"
     output_file       = f"{base}_transcription.{output_format}"
@@ -205,6 +239,10 @@ def transcribe_audio(input_file, language='en', no_speaker=False, output_format=
     elif "_quality_improved" in input_file:
         processing_file = input_file
         _ok(t, "input already processed")
+    elif enhance:
+        with contextlib.redirect_stdout(io.StringIO()):
+            processing_file = enhance_audio(input_file)
+        _ok(t, "denoise + dynaudnorm + 16kHz mono")
     elif no_improve:
         with contextlib.redirect_stdout(io.StringIO()):
             processing_file = convert_to_wav(input_file)
@@ -403,6 +441,9 @@ if __name__ == "__main__":
     parser.add_argument("--model", choices=['tiny', 'base', 'small', 'medium', 'large', 'turbo'], default='large',
                         help="Whisper model size (default: large = large-v3, ~2.7 GB VRAM; turbo = large-v3-turbo, faster)")
     parser.add_argument("--no-improve", action="store_true", help="Skip audio quality improvement for faster processing")
+    parser.add_argument("--enhance", action="store_true",
+                        help="Enhance degraded audio (far-field / noisy): denoise "
+                             "+ dynamic normalization. Overrides --no-improve.")
     parser.add_argument("--max-speakers", type=int, default=0, metavar='N',
                         help="Maximum number of speakers expected (0 = auto). "
                              "Setting this speeds up clustering significantly — "
@@ -410,4 +451,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     input_file = ' '.join(args.input_file)
-    transcribe_audio(input_file, args.language, args.no_speaker, args.output_format, args.model, args.no_improve, args.max_speakers)
+    transcribe_audio(input_file, args.language, args.no_speaker, args.output_format,
+                     args.model, args.no_improve, args.max_speakers, args.enhance)
