@@ -662,9 +662,10 @@ def act_transcribe(path: str):
     lang_idx = select_menu([
         ('FR — French',  'default'),
         ('EN — English', ''),
+        ('Auto',         'language auto-detection'),
     ], title='Language')
     if lang_idx is None: return
-    lang = ['fr', 'en'][lang_idx]
+    lang = ['fr', 'en', 'auto'][lang_idx]
 
     rec = recommended_model('transcribe')   # différé → modèle qualité
     _models = ['turbo', 'large', 'medium', 'small', 'base', 'tiny']

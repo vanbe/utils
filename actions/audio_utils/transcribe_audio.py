@@ -261,9 +261,11 @@ def transcribe_audio(input_file, language='en', no_speaker=False, output_format=
             whisper_segments = json.load(f)
         _ok(t, f"{len(whisper_segments)} segments  (cached)")
     else:
+        # 'auto' → None : laisse Whisper détecter la langue.
+        whisper_lang = None if (language or '').lower() == 'auto' else language
         segments_iter, _ = model.transcribe(
             processing_file,
-            language=language,
+            language=whisper_lang,
             beam_size=5,
             vad_filter=True,
             vad_parameters=dict(min_silence_duration_ms=500),
@@ -395,7 +397,7 @@ def transcribe_audio(input_file, language='en', no_speaker=False, output_format=
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Transcribe audio with speaker diarization")
     parser.add_argument("input_file", nargs='+', help="Path to the audio file")
-    parser.add_argument("--language", default="en", help="Language code (e.g., en, fr)")
+    parser.add_argument("--language", default="en", help="Language code (e.g., en, fr) or 'auto'")
     parser.add_argument("--no-speaker", action="store_true", help="Skip speaker recognition")
     parser.add_argument("--output-format", choices=['md', 'srt'], default='md', help="Output format: md or srt")
     parser.add_argument("--model", choices=['tiny', 'base', 'small', 'medium', 'large', 'turbo'], default='large',

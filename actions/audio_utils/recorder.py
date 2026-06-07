@@ -538,6 +538,11 @@ class Recorder:
             except subprocess.TimeoutExpired:
                 self._terminate(self._ff)
                 rc = self._ff.wait()
+        # Le tee PCM (on_pcm) tourne sur self._pump : on l'attend pour garantir
+        # que toutes les données ont été poussées vers la transcription avant
+        # que l'appelant ne finalise (finalize()).
+        if self._pump:
+            self._pump.join(timeout=5)
         self._write_sidecar()
         return rc == 0 and os.path.exists(self.out_path)
 
@@ -554,6 +559,8 @@ class Recorder:
                     p.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     pass
+        if self._pump:
+            self._pump.join(timeout=5)
         for path in (self.out_path,
                      os.path.splitext(self.out_path)[0] + '.channels.json'):
             try:
