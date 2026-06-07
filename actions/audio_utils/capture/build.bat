@@ -6,6 +6,10 @@ set HERE=%~dp0
 set BIN=%HERE%..\bin
 if not exist "%BIN%" mkdir "%BIN%"
 
+REM Note : l'epinglage SHA-256 (bin\capture.exe.sha256) est fait par la TUI
+REM au 1er lancement (« Epingler maintenant »), via Python hashlib — format
+REM garanti coherent avec recorder.verify_capture(). Pas d'epinglage ici.
+
 where g++ >nul 2>nul
 if %ERRORLEVEL%==0 (
   g++ -std=c++17 -O2 -static -static-libgcc -static-libstdc++ "%HERE%capture.cpp" -o "%BIN%\capture.exe" -lole32 -loleaut32 -luuid -lwinmm

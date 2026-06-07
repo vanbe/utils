@@ -1012,22 +1012,12 @@ def _record_live(rec, sources, out_path, transcript=None) -> str:
     return result
 
 
-def _ensure_capture_exe(backend: str) -> bool:
-    """Sur WSL, s'assure que capture.exe existe (propose de le construire)."""
-    if backend != 'wsl' or recorder.capture_exe_present():
-        return True
-    print(warn('  Le capteur Windows (capture.exe) est absent — il n\'est pas versionné.'))
-    idx = select_menu([
-        ('Construire maintenant', 'cross-compile via mingw (build.sh)'),
-        ('Annuler', ''),
-    ], title='capture.exe manquant')
-    if idx != 0:
-        return False
+def _build_capture_exe() -> bool:
     print(dim('\n  Construction de capture.exe…'))
     okb, log = recorder.build_capture()
     print()
     if okb:
-        print(ok('  ✓ capture.exe construit.'))
+        print(ok('  ✓ capture.exe construit et épinglé (SHA-256).'))
         return True
     print(err('  ✗ Build échoué.'))
     if log:
@@ -1036,6 +1026,55 @@ def _ensure_capture_exe(backend: str) -> bool:
     print(dim('    (ou compiler sur Windows : actions/audio_utils/capture/build.bat)'))
     pause()
     return False
+
+
+def _ensure_capture_exe(backend: str) -> bool:
+    """Sur WSL, s'assure que capture.exe existe ET n'a pas été altéré.
+    Build à la demande + vérification d'intégrité (épinglage SHA-256) :
+    un binaire substitué pourrait exfiltrer l'audio → on le refuse."""
+    if backend != 'wsl':
+        return True
+    if not recorder.capture_exe_present():
+        print(warn("  Le capteur Windows (capture.exe) est absent — il n'est pas versionné."))
+        idx = select_menu([
+            ('Construire maintenant', 'cross-compile via mingw (build.sh)'),
+            ('Annuler', ''),
+        ], title='capture.exe manquant')
+        if idx != 0:
+            return False
+        return _build_capture_exe()
+
+    status, cur = recorder.verify_capture()
+    if status == 'ok':
+        return True
+    if status == 'mismatch':
+        print(err('  ⚠ capture.exe a été MODIFIÉ depuis sa compilation '
+                  '(hash ≠ épinglé).'))
+        print(dim('    Un binaire substitué pourrait capter/exfiltrer l\'audio.'))
+        idx = select_menu([
+            ('Reconstruire depuis la source', '(recommandé) build.sh + ré-épinglage'),
+            ('Ré-épingler (je fais confiance)', 'accepter ce binaire tel quel'),
+            ('Annuler', ''),
+        ], title='Intégrité capture.exe')
+        if idx == 0:
+            return _build_capture_exe()
+        if idx == 1:
+            recorder.pin_capture()
+            print(ok('  ✓ Binaire ré-épinglé.'))
+            return True
+        return False
+    # 'unpinned' : binaire présent mais jamais épinglé (ex. build Windows manuel)
+    print(warn('  capture.exe présent mais non épinglé (intégrité non vérifiable).'))
+    idx = select_menu([
+        ('Épingler maintenant', '(recommandé) fige le hash de confiance'),
+        ('Continuer sans épingler', ''),
+        ('Annuler', ''),
+    ], title='capture.exe non épinglé')
+    if idx == 0:
+        recorder.pin_capture()
+        print(ok('  ✓ capture.exe épinglé (SHA-256).'))
+        return True
+    return idx == 1
 
 
 def act_record_audio(dirpath: str):

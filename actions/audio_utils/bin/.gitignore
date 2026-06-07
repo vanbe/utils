@@ -1,2 +1,4 @@
 # Binaire de capture NON versionné — construit via ../capture/build.sh|build.bat
 capture.exe
+# Ancre de confiance locale (hash SHA-256 du binaire local) — propre à la machine
+capture.exe.sha256

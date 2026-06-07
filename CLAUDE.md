@@ -162,6 +162,26 @@ dossier, TUI-only.**
   propose de le **construire** s'il manque (`recorder.build_capture()`). Cross-build
   vérifié : `g++-mingw-w64-x86-64`, binaire statique, imports = `kernel32/msvcrt/
   ole32` uniquement.
+- **Confidentialité / intégrité du flux audio** :
+  - capture.exe ne communique QUE par **pipes anonymes hérités** (stdout PCM,
+    stderr LEVEL) → privés au couple parent↔enfant, **aucun tiers ne peut
+    s'y brancher**. Il ne lit jamais stdin ; entrée = `argv` seulement.
+  - Le binaire buildé **ne linke aucune lib réseau** (`build.sh` : `ole32/
+    oleaut32/uuid/winmm`) → il ne PEUT pas exfiltrer l'audio. **INVARIANT :
+    rester stdio-only, ne JAMAIS ajouter de socket/named pipe** (sinon il
+    faudrait authentifier l'endpoint). La transcription tourne 100 % en local
+    (faster-whisper/CTranslate2) — l'audio ne part jamais sur le réseau.
+  - Une **clé compile-time serait inutile** : pas d'endpoint à garder, et un
+    secret embarqué dans un binaire distribué n'est pas secret. La vraie menace
+    réaliste = un **capture.exe substitué** (trojan ouvrant une socket). Parade =
+    **épinglage SHA-256** : `build_capture()`/`pin_capture()` écrivent
+    `bin/capture.exe.sha256` (gitignoré, propre à la machine) ; `verify_capture()`
+    renvoie `ok|mismatch|unpinned|absent` ; `recorder._start_wsl()` **REFUSE**
+    un `mismatch`. La TUI (`_ensure_capture_exe`) propose rebuild/ré-épinglage.
+  - ⚠ **Exposition résiduelle réelle** : les sorties (FLAC/srt/md) sont écrites
+    dans le dossier de travail, souvent **synchronisé Nextcloud** → elles partent
+    vers le cloud + tous les appareils synchronisés. C'est là, pas dans le pipe,
+    que se joue la confidentialité côté usage.
 - **TUI-only assumé** : l'action est câblée dans `_actions_for` (branche dossier)
   + `_ACTION_CAT` de `utils_tools.py`, mais **PAS** dans `_REGISTRY`/
   `_FOLDER_REGISTRY` de `utils_run.py` ni dans `SKILL.md` (enregistrement live =

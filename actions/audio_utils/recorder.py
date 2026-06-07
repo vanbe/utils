@@ -26,6 +26,7 @@ l'import et l'énumération fonctionnent même sur une box headless sans audio.
 numpy n'est importé que si présent, pour le calcul de niveau du backend Linux.
 """
 
+import hashlib
 import json
 import math
 import os
@@ -38,6 +39,7 @@ import time
 
 _HERE         = os.path.dirname(os.path.abspath(__file__))
 CAPTURE_EXE   = os.path.join(_HERE, 'bin', 'capture.exe')
+CAPTURE_SHA   = CAPTURE_EXE + '.sha256'          # ancre de confiance (épinglage)
 CAPTURE_DIR   = os.path.join(_HERE, 'capture')
 CAPTURE_BUILD = os.path.join(CAPTURE_DIR, 'build.sh')
 
@@ -47,13 +49,60 @@ DEFAULT_RATE = 48000
 # ---------------------------------------------------------------------------
 # Binaire de capture Windows (non versionné — construit à la demande)
 # ---------------------------------------------------------------------------
+#
+# Sécurité / confidentialité du flux audio :
+#   * capture.exe ne parle QUE par pipes anonymes hérités (stdout PCM, stderr
+#     LEVEL) → privés au couple parent↔enfant, inaccessibles à un tiers.
+#   * le binaire buildé ne linke AUCUNE lib réseau (build.sh : ole32/oleaut32/
+#     uuid/winmm) → il ne peut pas exfiltrer l'audio. INVARIANT : rester
+#     stdio-only, ne JAMAIS ajouter de socket/named pipe.
+#   * la seule façon réaliste qu'un tiers « écoute » serait un capture.exe
+#     SUBSTITUÉ (trojan qui, lui, ouvrirait une socket). D'où l'épinglage
+#     SHA-256 ci-dessous : on enregistre le hash au build et on REFUSE de
+#     lancer un binaire dont le hash ne correspond plus.
 
 def capture_exe_present() -> bool:
     return os.path.exists(CAPTURE_EXE)
 
 
+def _sha256_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for blk in iter(lambda: f.read(1 << 20), b''):
+            h.update(blk)
+    return h.hexdigest()
+
+
+def pin_capture() -> str:
+    """Épingle capture.exe : écrit son hash de confiance. Renvoie le hash."""
+    digest = _sha256_file(CAPTURE_EXE)
+    with open(CAPTURE_SHA, 'w', encoding='utf-8') as f:
+        f.write(digest + '\n')
+    return digest
+
+
+def verify_capture() -> tuple[str, str]:
+    """Vérifie l'intégrité de capture.exe vs son hash épinglé.
+    Renvoie ('ok'|'mismatch'|'unpinned'|'absent', hash_courant_ou_'')."""
+    if not os.path.exists(CAPTURE_EXE):
+        return 'absent', ''
+    try:
+        cur = _sha256_file(CAPTURE_EXE)
+    except OSError:
+        return 'absent', ''
+    if not os.path.exists(CAPTURE_SHA):
+        return 'unpinned', cur
+    try:
+        with open(CAPTURE_SHA, encoding='utf-8') as f:
+            pinned = f.read().strip()
+    except OSError:
+        return 'unpinned', cur
+    return ('ok' if pinned == cur else 'mismatch'), cur
+
+
 def build_capture() -> tuple[bool, str]:
-    """Tente de construire capture.exe via capture/build.sh. Renvoie (ok, log)."""
+    """Tente de construire capture.exe via capture/build.sh. Renvoie (ok, log).
+    En cas de succès, (ré)épingle automatiquement le hash du binaire produit."""
     if not os.path.exists(CAPTURE_BUILD):
         return False, f'script de build absent : {CAPTURE_BUILD}'
     try:
@@ -62,7 +111,13 @@ def build_capture() -> tuple[bool, str]:
     except (OSError, subprocess.SubprocessError) as e:
         return False, str(e)
     log = ((r.stdout or '') + (r.stderr or '')).strip()
-    return (r.returncode == 0 and capture_exe_present()), log
+    ok = (r.returncode == 0 and capture_exe_present())
+    if ok:
+        try:
+            pin_capture()
+        except OSError:
+            pass
+    return ok, log
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +353,14 @@ class Recorder:
                 f'binaire de capture introuvable : {CAPTURE_EXE}\n'
                 '  → le construire : actions/audio_utils/capture/build.sh '
                 '(ou build_capture()).')
+        # Refus net si le binaire a été modifié depuis sa compilation (un
+        # capture.exe substitué pourrait, lui, exfiltrer l'audio).
+        if verify_capture()[0] == 'mismatch':
+            raise RuntimeError(
+                'capture.exe a été MODIFIÉ depuis sa compilation '
+                '(hash ≠ bin/capture.exe.sha256) — lancement refusé.\n'
+                '  → reconstruire (capture/build.sh) ; ou, si le changement est '
+                'légitime, ré-épingler via recorder.pin_capture().')
         cmd = [CAPTURE_EXE, '--rate', str(self.rate)]
         for s in self.sources:
             cmd += ['--source', s['id']]
