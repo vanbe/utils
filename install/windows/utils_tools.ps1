@@ -29,7 +29,16 @@ if ($wslUnc.Success) {
     $rest       = $wslUnc.Groups[2].Value
     $distroArgs = @('-d', $distro)
     $wslPath    = '/' + ($rest -replace '\\', '/')
+} elseif ($winCwd -match '^([A-Za-z]):\\(.*)$') {
+    # Genuine Windows drive path (C:\Users\…). Convert to /mnt/<drive>/… here:
+    # passing backslashes through `wsl -- wslpath` strips them
+    # (C:\Users\X → C:UsersX), so wslpath fails and returns null → .Trim() throws.
+    # Map it directly instead.
+    $drive   = $Matches[1].ToLower()
+    $rest    = $Matches[2] -replace '\\', '/'
+    $wslPath = "/mnt/$drive/$rest"
 } else {
+    # Last resort for anything exotic (mapped network drive, etc.).
     $wslPath = (& wsl @distroArgs -- wslpath -u $winCwd).Trim()
 }
 

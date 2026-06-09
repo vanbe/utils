@@ -51,6 +51,98 @@ def recommended_model(role: str = 'live') -> str:
     return _env_or_dotenv('LIVE_TRANSCRIBE_MODEL') or 'turbo'
 
 
+# Phrases que Whisper "hallucine" typiquement sur du SILENCE / du bruit / un
+# résidu d'écho faible (souvent en anglais, même sur de l'audio FR). On ne les
+# jette QUE si le modèle a aussi "senti" du non-parole (no_speech_prob élevé) →
+# on ne supprime pas une vraie occurrence prononcée franchement.
+_HALLUCINATION_PHRASES = {
+    'thank you', 'thank you.', 'thank you very much', 'thanks', 'thanks.',
+    'thank you so much', 'thanks for watching', 'thanks for watching!',
+    "i'll see you next time", 'see you next time', 'see you next time.',
+    'see you in the next video', "you're welcome", 'bye', 'bye.', 'bye bye',
+    "we'll be right back", "we'll be right back.", 'okay', 'ok', 'you',
+    'so', 'yeah', 'mm-hmm', 'mmm', 'uh', 'um', 'hmm', 'oh', 'oh.',
+    'please subscribe', 'like and subscribe', 'subscribe',
+    'merci', "merci d'avoir regardé", 'au revoir', 'sous-titrage',
+    "sous-titres réalisés par la communauté d'amara.org",
+    'sous-titres réalisés para la communauté d\'amara.org',
+}
+
+
+# Phrases qui, SEULES, sont quasi toujours des hallucinations Whisper (jamais du
+# vrai contenu dans une réunion) → jetées même en 1ʳᵉ occurrence, sans condition.
+# On y met les « tics » de sous-titres YouTube, PAS les acquiescements ambigus
+# (« okay », « oui », « so »… restent dans le blocklist souple, conditionnel).
+_STRONG_HALLUCINATION_PHRASES = {
+    'you', 'thank you', 'thank you.', 'thank you very much', 'thank you so much',
+    'thanks for watching', 'thanks for watching!', "i'll see you next time",
+    'see you next time', 'see you next time.', 'see you in the next video',
+    "we'll be right back", "we'll be right back.", 'we will be right back',
+    'we will be right back.', 'please subscribe',
+    'like and subscribe', 'subscribe', "merci d'avoir regardé",
+    "sous-titres réalisés par la communauté d'amara.org",
+}
+
+
+# Mots-outils / interjections qui, SEULS (segment d'un seul mot), ne sont JAMAIS
+# un énoncé réel : ce sont des hallucinations typiques de Whisper sur du bruit
+# (frappes clavier, clics). Jetés inconditionnellement. On n'y met PAS les
+# acquiescements ambigus (« okay », « yeah », « bye » → blocklist souple).
+_FILLER_SINGLE_WORDS = {
+    'and', 'the', 'a', 'an', 'of', 'to', 'in', 'on', 'at', 'is', 'it', 'i',
+    'so', 'but', 'or', 'as', 'we', 'he', 'she', 'they', 'that', 'this',
+    'uh', 'um', 'hmm', 'mm', 'mmm', 'eh', 'ah', 'er', 'hm', 'huh',
+    'et', 'le', 'la', 'les', 'de', 'des', 'un', 'une', 'je', 'euh',
+}
+
+
+def is_hallucination(text: str, avg_logprob: float = 0.0,
+                     no_speech_prob: float = 0.0) -> bool:
+    """Heuristique anti-hallucination Whisper (silence / bruit / résidu d'écho).
+    Vrai = segment à jeter. Conservateur : les phrases AMBIGUËS ne tombent que si
+    la confiance « parole » est faible (ou la confiance globale très basse) ; les
+    tics de sous-titres et les mots-outils isolés tombent inconditionnellement."""
+    t = (text or '').strip()
+    if not t:
+        return True
+    low = t.lower().strip(' .!?,…"\'')
+    if low in _STRONG_HALLUCINATION_PHRASES:             # tic de sous-titres → toujours faux
+        return True
+    if low in _FILLER_SINGLE_WORDS:                      # mot-outil isolé → bruit
+        return True
+    if avg_logprob is not None and avg_logprob < -1.2:   # quasi toujours du bruit inventé
+        return True
+    if low in _HALLUCINATION_PHRASES and (no_speech_prob or 0.0) > 0.4:
+        return True
+    return False
+
+
+def _norm_phrase(t: str) -> str:
+    """Normalise pour comparer deux énoncés (minuscules, alphanum + espaces)."""
+    return ' '.join(''.join(c for c in (t or '').lower()
+                            if c.isalnum() or c.isspace()).split())
+
+
+def is_echo_duplicate(text: str, label: str, start: float, recent: list,
+                      window: float = 4.0, cross: float = 2.5,
+                      max_words: int = 4) -> bool:
+    """True si `text` (COURT) duplique un énoncé récent → répétition d'un même
+    canal ou écho quasi-simultané de l'autre canal (« Thank you » sur Moi ET
+    Système à la même seconde). On ne police QUE les phrases courtes (≤ max_words)
+    — les phrases longues uniques sont de la vraie parole. `recent` = liste de
+    (start, label, norm) tenue à jour par l'appelant (live ET différé)."""
+    norm = _norm_phrase(text)
+    if not norm or len(norm.split()) > max_words:
+        return False
+    for ts, lab, n in recent:
+        if abs(start - ts) <= window and n == norm:
+            if lab == label:               # même canal, répété → hallucination
+                return True
+            if abs(start - ts) <= cross:   # autre canal, quasi simultané → écho
+                return True
+    return False
+
+
 def channel_labels(sources: list) -> dict:
     """source_index → libellé locuteur. micro → 'Moi', sortie → 'Système'.
     `sources` = liste de dicts avec au moins {'index', 'kind'} (cf. channel_map).

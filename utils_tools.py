@@ -18,6 +18,7 @@ import select as _sel_mod
 import threading
 import time
 import glob
+import textwrap
 from datetime import datetime
 
 # Source de vérité des scripts d'opérations dossier (chemins partagés avec la CLI
@@ -57,6 +58,7 @@ _BLU = '\033[34m'
 _MGT = '\033[35m'
 _WHT = '\033[97m'
 _GRY = '\033[90m'
+_ORG = '\033[38;5;208m'   # orange (256 couleurs) — état PAUSE
 _HIDE = '\033[?25l'
 _SHOW = '\033[?25h'
 _EOL  = '\033[K'        # erase to end of line
@@ -75,6 +77,10 @@ def _bar():
 def _term_width():
     try:    return os.get_terminal_size().columns
     except: return 80
+
+def _term_height():
+    try:    return os.get_terminal_size().lines
+    except: return 24
 
 # ---------------------------------------------------------------------------
 # Raw keyboard input
@@ -638,15 +644,23 @@ def _act_transcribe_channels(path: str):
     ], title='Réhaussement audio')
     if enh_idx is None: return
 
+    aec_idx = select_menu([
+        ('Non',                                  'défaut'),
+        ('Oui — annuler l\'écho des haut-parleurs', 'retire du micro la sortie système recaptée'),
+    ], title='Annulation d\'écho (si écoute sur HP, pas au casque)')
+    if aec_idx is None: return
+
     base = os.path.splitext(name)[0]
     if not confirm([('File', name), ('Mode', 'par canal (Moi / Système)'),
                     ('Langue', lang), ('Modèle', model),
                     ('Réhaussement', 'oui (denoise)' if enh_idx == 1 else 'non'),
+                    ('Annulation écho', 'oui' if aec_idx == 1 else 'non'),
                     ('Output', f'{base}.srt + {base}.md')]):
         return
     print()
     args = [path, '--language', lang, '--model', model]
     if enh_idx == 1: args.append('--enhance')
+    if aec_idx == 1: args.append('--aec')
     rc = _py(os.path.join(_AUDIO_UTILS, 'transcribe_channels.py'), *args)
     _show_result(rc, os.path.join(os.path.dirname(path), base + '.md'))
     pause()
@@ -883,37 +897,76 @@ def _mmss(sec: float) -> str:
     return f'{sec // 60:02d}:{sec % 60:02d}'
 
 
-_TRANSCRIPT_H = 10   # hauteur fixe de la zone transcript (lignes constantes)
+_TRANSCRIPT_H = 10       # hauteur par défaut (fallback) de la zone transcript
+_TRANSCRIPT_H_MIN = 4    # plancher quand le terminal est très court
+_INTERIM_RESERVE = 3     # lignes RÉSERVÉES en bas pour l'aperçu interim (taille fixe)
 
 
-def _fmt_seg(seg, partial: bool = False) -> str:
-    width = max(20, _term_width() - 4)
-    prefix = f'[{_mmss(seg["start"])}] {seg["label"]}: '
-    avail = max(8, width - len(prefix) - 2)
-    text = seg['text']
-    if len(text) > avail:
-        text = text[:avail - 1] + '…'
-    if partial:   # aperçu en cours → tout grisé + « … »
-        return f'  {_GRY}[{_mmss(seg["start"])}] {seg["label"]}: {text} …{_R}'
+def _fmt_seg(seg, partial: bool = False) -> list:
+    """Rend un segment en une LISTE de lignes : la phrase est wrappée (au lieu
+    d'être tronquée par « … ») pour rester lisible en entier. Les lignes de
+    continuation sont indentées sous le début du texte (aligné sous le label)."""
+    width = max(24, _term_width())
+    ts = _mmss(seg['start'])
+    label = seg['label']
+    prefix = f'[{ts}] {label}: '
+    indent = ' ' * len(prefix)                    # aligne la suite sous le texte
+    avail = max(8, width - 2 - len(prefix))       # 2 = indentation « ' ' » de tête
+    parts = textwrap.wrap(seg['text'], width=avail) or ['']
+
+    if partial:   # aperçu en cours → tout grisé + « … » sur la dernière ligne
+        lines = []
+        for i, p in enumerate(parts):
+            head = prefix if i == 0 else indent
+            tail = ' …' if i == len(parts) - 1 else ''
+            lines.append(f'  {_GRY}{head}{p}{tail}{_R}')
+        return lines
+
     color = _GRN if seg['kind'] == 'input' else _MGT
-    return f'  {_GRY}[{_mmss(seg["start"])}]{_R} {color}{seg["label"]}{_R}: {text}'
+    lines = [f'  {_GRY}[{ts}]{_R} {color}{label}{_R}: {parts[0]}']
+    lines += [f'  {indent}{p}' for p in parts[1:]]
+    return lines
 
 
-def _transcript_lines(transcript) -> list:
-    """Zone transcript (hauteur fixe). `transcript` = (state, lock) ;
-    state = {'final': [segs], 'partial': {source_idx: seg}}."""
+def _transcript_lines(transcript, height: int = _TRANSCRIPT_H) -> list:
+    """Zone transcript (hauteur `height` lignes de contenu + 2 d'entête).
+    `transcript` = (state, lock) ; state = {'final': [segs], 'partial': {idx: seg}}.
+
+    **Deux régions à tailles stables** pour éviter la va-et-vient :
+      - en BAS, une région de taille FIXE (`reserve`) pour l'aperçu interim ;
+      - au-dessus, les segments FINAUX (remplissent vers le bas puis défilent).
+    Comme l'interim a sa propre région fixe, sa réinterprétation (qui change le
+    nombre de lignes wrappées) ne décale JAMAIS les lignes finales déjà figées.
+    `height` est calculé d'après la hauteur du terminal par l'appelant."""
     out = [f'  {_bar()}', f'  {bold("Transcript (live)")}  {dim("· … = en cours")}']
     state, lock = transcript
     with lock:
         finals = list(state['final'])
         partials = list(state['partial'].values())
-    display = [_fmt_seg(s, False) for s in finals]
-    display += [_fmt_seg(s, True)
-                for s in sorted(partials, key=lambda s: s.get('source_idx', 0))]
-    display = display[-_TRANSCRIPT_H:]
-    out += display
-    out += [''] * (_TRANSCRIPT_H - len(display))
-    return out
+    # Tri CHRONOLOGIQUE : les canaux sont transcrits en série (un seul worker),
+    # donc les segments arrivent dans le désordre temporel (un bloc « Moi » puis
+    # un bloc « Système »…). On les réordonne par timestamp de début pour une
+    # conversation lisible — comme le .srt/.md (write_srt/write_md trient aussi).
+    finals.sort(key=lambda s: s.get('start', 0.0))
+
+    reserve = min(_INTERIM_RESERVE, max(0, height - 2))   # garde ≥2 lignes aux finaux
+    fh = max(1, height - reserve)
+
+    # Finaux : ancrés en haut (remplissent vers le bas), défilent une fois pleins.
+    fin = []
+    for s in finals:
+        fin += _fmt_seg(s, False)
+    fin = fin[-fh:]
+    fin += [''] * (fh - len(fin))
+
+    # Interim : région de taille fixe en bas (on montre les dernières lignes).
+    itl = []
+    for s in sorted(partials, key=lambda s: s.get('source_idx', 0)):
+        itl += _fmt_seg(s, True)
+    itl = itl[-reserve:] if reserve else []
+    itl += [''] * (reserve - len(itl))
+
+    return out + fin + itl
 
 
 def _meter(level: float, width: int = 28) -> str:
@@ -925,17 +978,18 @@ def _meter(level: float, width: int = 28) -> str:
 
 
 def _record_lines(rec, sources, out_path, transcript=None, confirming=False) -> list:
-    lines = ['']
-    status = warn('⏸ PAUSE') if rec.paused else err('● REC')
-    lines.append(f'  {bold("Recording")}   {status}')
+    # --- en-tête (statut, fichier, temps, vumètres) ---
+    head = ['']
+    status = (f'{_ORG}{_B}⏸ PAUSE{_R}' if rec.paused else err('● REC'))
+    head.append(f'  {bold("Recording")}   {status}')
     fname = os.path.basename(out_path)
     if len(fname) > 44:
         fname = fname[:43] + '…'
-    lines.append(f'  {dim("File:")}  {hi(fname)}')
-    lines.append(f'  {dim("Time:")}  {bold(_fmt_dur(rec.elapsed()))}'
-                 f'    {dim("Size:")} {_size(out_path) or "—"}'
-                 f'    {dim("Format:")} {rec.rate} Hz · {rec.total_channels}ch FLAC')
-    lines.append(f'  {_bar()}')
+    head.append(f'  {dim("File:")}  {hi(fname)}')
+    head.append(f'  {dim("Time:")}  {bold(_fmt_dur(rec.elapsed()))}'
+                f'    {dim("Size:")} {_size(out_path) or "—"}'
+                f'    {dim("Format:")} {rec.rate} Hz · {rec.total_channels}ch FLAC')
+    head.append(f'  {_bar()}')
     # En pause, la capture est gelée (SIGSTOP) → pas de nouveaux niveaux : on
     # affiche 0 plutôt que de laisser les barres figées sur la dernière valeur.
     levels = [0.0] * len(sources) if rec.paused else rec.levels()
@@ -943,21 +997,31 @@ def _record_lines(rec, sources, out_path, transcript=None, confirming=False) -> 
         lvl = levels[i] if i < len(levels) else 0.0
         tag = f'{_GRN}IN {_R}' if s['kind'] == 'input' else f'{_MGT}OUT{_R}'
         name = s['name'] if len(s['name']) <= 26 else s['name'][:25] + '…'
-        lines.append(f'  [{tag}] {name:<26} {_meter(lvl)}')
-    if transcript is not None:
-        lines += _transcript_lines(transcript)
-    lines.append(f'  {_bar()}')
+        head.append(f'  [{tag}] {name:<26} {_meter(lvl)}')
+
+    # --- pied (séparateur + aide/confirmation + ligne vide) ---
+    tail = [f'  {_bar()}']
     if confirming:
-        lines.append(f'  {err("Supprimer cet enregistrement ?")}  '
-                     f'{bold("O")}=oui (supprime)  ·  {bold("N")}=non (continue)')
+        tail.append(f'  {err("Supprimer cet enregistrement ?")}  '
+                    f'{bold("O")}=oui (supprime)  ·  {bold("N")}=non (continue)')
     else:
-        lines.append(f'  {_GRY}Space pause/resume · S/Enter stop & save · '
-                     f'Esc/Q annuler{_R}')
-    lines.append('')
-    return lines
+        tail.append(f'  {_GRY}Space pause/resume · {bold("S")} stop & save · '
+                    f'Esc/Q annuler{_R}')
+    tail.append('')
+
+    if transcript is None:
+        return head + tail
+
+    # Hauteur du transcript = ce qu'il reste de fenêtre une fois l'en-tête, le
+    # pied et les 2 lignes d'en-tête de la zone retirés (− 1 de marge). Calculée
+    # à chaque frame : s'adapte à la taille du terminal (le resize est géré par
+    # _record_live qui efface l'écran si la hauteur change).
+    avail = _term_height() - len(head) - len(tail) - 2 - 1
+    th = max(_TRANSCRIPT_H_MIN, avail)
+    return head + _transcript_lines(transcript, th) + tail
 
 
-def _record_live(rec, sources, out_path, transcript=None) -> str:
+def _record_live(rec, sources, out_path, transcript=None, transcriber=None) -> str:
     """Écran live raw-mode. Retourne 'stopped' ou 'cancelled'."""
     fd  = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
@@ -966,49 +1030,79 @@ def _record_live(rec, sources, out_path, transcript=None) -> str:
     count = 0
     result = 'stopped'
     confirming = False        # Esc/Q armé → on demande confirmation avant suppression
+    last_size = None          # (lignes, colonnes) — détecte le redimensionnement
     try:
         tty.setraw(fd)
         rec.start()
         first = True
-        while True:
+        prev_lines = None
+        stop = False
+        while not stop:
+            # 1) ENTRÉES en premier : on draine TOUTES les touches en attente
+            #    avant de redessiner. La frappe est donc prise en compte tout de
+            #    suite (réactivité) et aucun appui ne « reste coincé » jusqu'au
+            #    cycle suivant (c'était la cause du « il faut faire 2× »).
+            while _sel_mod.select([sys.stdin], [], [], 0)[0]:
+                key = _read_key(fd)
+                if confirming:
+                    # Suppression destructive → exige un O/oui explicite ; tout le
+                    # reste (N, Esc, Espace…) annule la demande et reprend l'enreg.
+                    if key in ('char:o', 'char:O', 'char:y', 'char:Y'):
+                        result = 'cancelled'
+                        stop = True
+                    confirming = False
+                    break                       # redessine l'état tout de suite
+                if key in ('char:s', 'char:S'):   # arrêt = S uniquement (Enter
+                    stop = True                    # trop facile à presser par
+                    break                          # erreur → ignoré ici)
+                if key == 'char: ':
+                    if rec.paused:
+                        rec.resume()
+                        if transcriber is not None:  # réautorise Whisper
+                            transcriber.set_paused(False)
+                    else:
+                        rec.pause()
+                        if transcriber is not None:  # coupe Whisper (GPU au repos)
+                            transcriber.set_paused(True)
+                        if transcript is not None:   # purge les aperçus « … » figés
+                            _st, _lk = transcript
+                            with _lk:
+                                _st['partial'].clear()
+                elif key in ('esc', 'quit'):
+                    confirming = True               # demande confirmation d'abord
+                    break
+            if stop:
+                break
+
+            # 2) Redimensionnement du terminal → efface tout, repart du haut.
+            size = (_term_height(), _term_width())
+            if size != last_size:
+                sys.stdout.write('\033[2J\033[H')
+                last_size = size
+                first = True
+                prev_lines = None
+
+            # 3) Redessine SEULEMENT si le contenu a changé (en pause / idle le
+            #    terminal reste muet → frappe instantanée), et en UN SEUL write
+            #    (≈40 écritures/frame via le pty WSL = lent → latence ressentie).
             lines = _record_lines(rec, sources, out_path, transcript,
                                   confirming=confirming)
-            if not first:
-                sys.stdout.write(f'\033[{count}F')
-            for line in lines:
-                sys.stdout.write('\r' + line + _EOL + '\n')
-            sys.stdout.flush()
-            count = len(lines)
-            first = False
+            if lines != prev_lines:
+                buf = [] if first else [f'\033[{count}F']
+                for line in lines:
+                    buf.append('\r' + line + _EOL + '\n')
+                sys.stdout.write(''.join(buf))
+                sys.stdout.flush()
+                count = len(lines)
+                first = False
+                prev_lines = lines
 
             if not rec.is_alive():           # ffmpeg/capture terminé tout seul
                 break
 
-            ready, _, _ = _sel_mod.select([sys.stdin], [], [], 0.1)
-            if not ready:
-                continue
-            key = _read_key(fd)
-            if confirming:
-                # Suppression destructive → exige un O/oui explicite ; tout le
-                # reste (N, Esc, Espace…) annule la demande et reprend l'enreg.
-                if key in ('char:o', 'char:O', 'char:y', 'char:Y'):
-                    result = 'cancelled'
-                    break
-                confirming = False
-                continue
-            if key == 'enter' or key in ('char:s', 'char:S'):
-                break
-            if key == 'char: ':
-                if rec.paused:
-                    rec.resume()
-                else:
-                    rec.pause()
-                    if transcript is not None:   # purge les aperçus « … » figés
-                        _st, _lk = transcript
-                        with _lk:
-                            _st['partial'].clear()
-            elif key in ('esc', 'quit'):
-                confirming = True       # ne supprime pas encore : demande d'abord
+            # 4) Attend la prochaine touche (réveil immédiat à la frappe) ou
+            #    ~0.1 s pour rafraîchir les vumètres pendant l'enregistrement.
+            _sel_mod.select([sys.stdin], [], [], 0.1)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         _clear_block(count)
@@ -1157,32 +1251,39 @@ def act_record_audio(dirpath: str):
         # None → LiveTranscriber lit LIVE_TRANSCRIBE_MODEL (= le recommandé)
         model = [None, 'turbo', 'medium', 'small', 'large'][m_idx]
 
-    default_base = recorder.default_basename()
-    name = ask('Nom du fichier', default_base) or default_base
-    if name.lower().endswith('.flac'):
-        name = name[:-5]
-    out_path = recorder.unique_path(dirpath, name, 'flac')
+    # Annulation d'écho : proposée seulement si l'on capture à la fois un micro
+    # (entrée) et une sortie système — c'est le cas « écoute sur HP » où la
+    # sortie est recaptée par le micro.
+    want_aec = False
+    if want_trans and any(s.get('kind') == 'output' for s in chosen) \
+            and any(s.get('kind') == 'input' for s in chosen):
+        a_idx = select_menu([
+            ('Non', 'défaut (idéal : casque → pas d\'écho)'),
+            ('Oui — annuler l\'écho des haut-parleurs',
+             'retire du micro la sortie système recaptée'),
+        ], title='Annulation d\'écho (si écoute sur HP)')
+        if a_idx is None:
+            return
+        want_aec = (a_idx == 1)
 
-    details = [
-        ('Folder',   dirpath),
-        ('Sources',  ', '.join(s['name'] for s in chosen)),
-        ('Channels', str(sum(int(s['channels']) for s in chosen))),
-        ('File',     os.path.basename(out_path)),
-    ]
-    if want_trans:
-        details.append(('Transcription', f'live · {language} · {model or "défaut (.env)"}'))
-    if not confirm(details):
-        return
+    # Diarisation live : sépare les intervenants du canal SYSTÈME (P1/P2/P3).
+    # Proposée dès qu'il y a une sortie capturée + transcription. Le micro
+    # (« Moi ») n'est pas diarisé (un seul locuteur). Tourne sur CPU.
+    want_diar = False
+    if want_trans and any(s.get('kind') == 'output' for s in chosen):
+        d_idx = select_menu([
+            ('Non', 'le canal Système garde un seul libellé'),
+            ('Oui — séparer les intervenants (P1/P2/P3)',
+             'diarisation live du canal Système · embedding CPU (live, erreurs tolérées)'),
+        ], title='Diarisation des intervenants (Système)')
+        if d_idx is None:
+            return
+        want_diar = (d_idx == 1)
 
-    try:
-        rec = recorder.Recorder(chosen, out_path, backend=backend)
-    except Exception as e:
-        print(err(f'  ✗ {e}'))
-        pause()
-        return
-
-    transcriber = None
-    transcript = None
+    # Module de transcription importé UNE fois. Le modèle Whisper est mis en
+    # cache au 1er chargement (live_transcribe._MODEL_CACHE) puis réutilisé : on
+    # peut enchaîner « stop & nouvelle session » SANS recharger le modèle ni
+    # reprendre la VRAM — idéal pour laisser l'app tournée en fond.
     if want_trans:
         try:
             import live_transcribe
@@ -1190,73 +1291,135 @@ def act_record_audio(dirpath: str):
             print(err(f'  ✗ Module transcription indisponible : {e}'))
             pause()
             return
-        t_state = {'final': [], 'partial': {}}
-        t_lock = threading.Lock()
-        transcript = (t_state, t_lock)
 
-        def _on_seg(seg, _st=t_state, _lk=t_lock):
-            with _lk:
-                if seg.get('interim'):
-                    _st['partial'][seg['source_idx']] = seg
-                else:
-                    _st['final'].append(seg)
-                    _st['partial'].pop(seg['source_idx'], None)
+    # `transcriber`/`rec` définis avant la boucle pour que le `finally` puisse
+    # lâcher TOUTES les références au modèle et libérer la VRAM quelle que soit la
+    # sortie (le recorder garde `on_pcm = transcriber.feed_bytes` → il faut aussi
+    # le casser, sinon le GC ne peut pas libérer le modèle).
+    transcriber = None
+    rec = None
+    try:
+      while True:
+        default_base = recorder.default_basename()
+        name = ask('Nom du fichier', default_base) or default_base
+        if name.lower().endswith('.flac'):
+            name = name[:-5]
+        out_path = recorder.unique_path(dirpath, name, 'flac')
 
-        srt_path = os.path.splitext(out_path)[0] + '.srt'
+        details = [
+            ('Folder',   dirpath),
+            ('Sources',  ', '.join(s['name'] for s in chosen)),
+            ('Channels', str(sum(int(s['channels']) for s in chosen))),
+            ('File',     os.path.basename(out_path)),
+        ]
+        if want_trans:
+            details.append(('Transcription', f'live · {language} · {model or "défaut (.env)"}'))
+        if want_aec:
+            details.append(('Annulation écho', 'oui (sortie système retirée du micro)'))
+        if want_diar:
+            details.append(('Diarisation', 'oui · Système → P1/P2/P3 (live, CPU)'))
+        if not confirm(details):
+            return
+
         try:
-            transcriber = live_transcribe.LiveTranscriber(
-                rec.channel_map(), _on_seg, srt_path,
-                language=language, model_name=model)
+            rec = recorder.Recorder(chosen, out_path, backend=backend)
         except Exception as e:
             print(err(f'  ✗ {e}'))
             pause()
             return
-        rec.on_pcm = transcriber.feed_bytes
-        print(dim(f'  Chargement du modèle Whisper ({transcriber.model_name})…'))
+
+        transcriber = None
+        transcript = None
+        if want_trans:
+            t_state = {'final': [], 'partial': {}}
+            t_lock = threading.Lock()
+            transcript = (t_state, t_lock)
+
+            def _on_seg(seg, _st=t_state, _lk=t_lock):
+                with _lk:
+                    if seg.get('interim'):
+                        _st['partial'][seg['source_idx']] = seg
+                    else:
+                        _st['final'].append(seg)
+                        _st['partial'].pop(seg['source_idx'], None)
+
+            srt_path = os.path.splitext(out_path)[0] + '.srt'
+            try:
+                transcriber = live_transcribe.LiveTranscriber(
+                    rec.channel_map(), _on_seg, srt_path,
+                    language=language, model_name=model, aec=want_aec,
+                    diarize=want_diar)
+            except Exception as e:
+                print(err(f'  ✗ {e}'))
+                pause()
+                return
+            rec.on_pcm = transcriber.feed_bytes
+            print(dim(f'  Préparation du modèle Whisper ({transcriber.model_name})…'))
+            try:
+                transcriber.start()
+            except Exception as e:
+                print(err(f'  ✗ Modèle : {e}'))
+                pause()
+                return
+            if transcriber.model_loaded_from_cache:
+                print(dim('  (modèle déjà en mémoire — démarrage instantané)'))
+
         try:
-            transcriber.start()
+            result = _record_live(rec, chosen, out_path, transcript, transcriber)
         except Exception as e:
-            print(err(f'  ✗ Modèle : {e}'))
+            rec.cancel()
+            if transcriber:
+                transcriber.finalize()
+            print(err(f"  ✗ Erreur durant l'enregistrement : {e}"))
             pause()
             return
 
-    try:
-        result = _record_live(rec, chosen, out_path, transcript)
-    except Exception as e:
-        rec.cancel()
         if transcriber:
+            print(dim('\n  Finalisation de la transcription…'))
             transcriber.finalize()
-        print(err(f"  ✗ Erreur durant l'enregistrement : {e}"))
-        pause()
-        return
 
-    if transcriber:
-        print(dim('\n  Finalisation de la transcription…'))
-        transcriber.finalize()
+        print()
+        stem = os.path.splitext(os.path.basename(out_path))[0]
+        if result == 'cancelled':
+            print(warn('  Enregistrement annulé (fichier supprimé).'))
+            if transcriber:
+                for ext in ('.srt', '.md'):
+                    try:
+                        os.remove(os.path.splitext(out_path)[0] + ext)
+                    except OSError:
+                        pass
+        elif os.path.exists(out_path):
+            print(ok('  ✓ Enregistré.') + f'  {dim("→")} {hi(os.path.basename(out_path))}')
+            side = stem + '.channels.json'
+            extra = ''
+            if transcriber:
+                n = len(transcriber.segments_snapshot())
+                extra = (f' · transcript {stem}.srt + {stem}.md ({n} segments)' if n
+                         else ' · transcription vide (aucune parole détectée)')
+            print(dim(f'  Durée {_fmt_dur(rec.elapsed())} · {_size(out_path)} · '
+                      f'{rec.total_channels} canaux · sidecar {side}{extra}'))
+        else:
+            print(err('  ✗ Aucun fichier produit (capture/ffmpeg en échec ?).'))
 
-    print()
-    stem = os.path.splitext(os.path.basename(out_path))[0]
-    if result == 'cancelled':
-        print(warn('  Enregistrement annulé (fichier supprimé).'))
-        if transcriber:
-            for ext in ('.srt', '.md'):
-                try:
-                    os.remove(os.path.splitext(out_path)[0] + ext)
-                except OSError:
-                    pass
-    elif os.path.exists(out_path):
-        print(ok('  ✓ Enregistré.') + f'  {dim("→")} {hi(os.path.basename(out_path))}')
-        side = stem + '.channels.json'
-        extra = ''
-        if transcriber:
-            n = len(transcriber.segments_snapshot())
-            extra = (f' · transcript {stem}.srt + {stem}.md ({n} segments)' if n
-                     else ' · transcription vide (aucune parole détectée)')
-        print(dim(f'  Durée {_fmt_dur(rec.elapsed())} · {_size(out_path)} · '
-                  f'{rec.total_channels} canaux · sidecar {side}{extra}'))
-    else:
-        print(err('  ✗ Aucun fichier produit (capture/ffmpeg en échec ?).'))
-    pause()
+        # Enchaîner une nouvelle session garde le modèle en mémoire (reprise
+        # instantanée) ; Terminer (ou Esc) rend la main ET libère la VRAM.
+        nxt = select_menu([
+            ('Nouvelle session', 'réenregistre tout de suite · modèle gardé en mémoire'),
+            ('Terminer',         'retour au navigateur · libère la VRAM (modèle déchargé)'),
+        ], title='Session terminée')
+        if nxt != 0:
+            break
+    finally:
+        # Sortie de la fonctionnalité d'enregistrement → on décharge le modèle
+        # Whisper pour rendre la VRAM (sinon il reste chargé pour rien). Le cache
+        # n'accélère que l'enchaînement « Nouvelle session » à l'intérieur.
+        if want_trans:
+            if rec is not None:
+                rec.on_pcm = None         # casse rec → transcriber → modèle
+            transcriber = None
+            rec = None
+            if live_transcribe.unload_models():
+                print(dim('  Modèle Whisper déchargé · VRAM libérée.'))
 
 
 def act_compress_audio(path: str):

@@ -205,6 +205,7 @@ def _list_sources_wsl() -> list[dict]:
         return []
     try:
         r = subprocess.run([CAPTURE_EXE, '--list'],
+                           stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return []
@@ -364,9 +365,14 @@ class Recorder:
         cmd = [CAPTURE_EXE, '--rate', str(self.rate)]
         for s in self.sources:
             cmd += ['--source', s['id']]
-        # capture.exe : PCM s16le interleavé sur stdout, "LEVEL i rms" sur stderr
+        # capture.exe : PCM s16le interleavé sur stdout, "LEVEL i rms" sur stderr.
+        # stdin=DEVNULL est CRITIQUE : sans ça, le binaire Windows hérite du stdin
+        # du terminal et l'interop WSL lance un relais qui LIT le pty pour le lui
+        # transmettre → il VOLE les frappes au TUI (Espace/pause « marche 1 fois
+        # sur 5 »). capture.exe ne lit jamais stdin → /dev/null sans effet de bord.
         self._cap = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+            cmd, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
         if self.on_pcm:
             # Python dans le chemin : tee stdout → ffmpeg.stdin + on_pcm
             self._ff = subprocess.Popen(
@@ -489,6 +495,7 @@ class Recorder:
             tap = subprocess.Popen(
                 ['parec', '--device=' + s['id'], '--rate=8000',
                  '--channels=1', '--format=s16le'],
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
             self._taps.append(tap)
             t = threading.Thread(target=self._read_levels_linux,

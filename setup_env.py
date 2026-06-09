@@ -223,6 +223,20 @@ def _compute_defaults(h: HardwareProfile) -> dict[str, tuple[str, str]]:
     d['LIVE_TRANSCRIBE_WINDOW_SEC']   = ('15',  "longueur max d'un énoncé avant flush vers Whisper")
     d['LIVE_TRANSCRIBE_INTERIM_SEC']  = ('2',   'aperçus temps réel toutes les N s (0 = désactivé)')
 
+    # --- Diarisation LIVE des intervenants (canal Système → P1/P2/P3) ---
+    # Embedding de voix par énoncé sur CPU + clustering en ligne. À CALIBRER sur
+    # de l'audio réel : seuil cosinus plus BAS = fusionne plus (moins de
+    # locuteurs), plus HAUT = sépare plus (risque de scinder un même locuteur).
+    d['LIVE_DIARIZE_THRESHOLD']    = ('0.5', 'cosinus ≥ seuil → même personne (0.4–0.7 ; à calibrer)')
+    d['LIVE_DIARIZE_MAX_SPEAKERS'] = ('8',   'nombre max d’intervenants distincts sur le canal Système')
+
+    # --- Garde anti-écho au niveau énoncé (HP recaptés par le micro) ---
+    # Jette un énoncé « Moi » qui est en réalité l'écho de la sortie (cohérence
+    # spectrale micro↔sortie ≥ seuil). Sûr au casque (voix décorrélée → coh≈0) et
+    # en double-talk (voix ≳ écho → coh sous le seuil). Plus BAS = plus agressif.
+    d['LIVE_ECHO_GATE']     = ('1',    'jeter les énoncés Moi dominés par l’écho HP (1 = oui, 0 = non)')
+    d['LIVE_ECHO_GATE_COH'] = ('0.65', 'cohérence micro↔sortie ≥ seuil → écho recapté (0.55–0.75)')
+
     return d
 
 
