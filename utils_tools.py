@@ -392,7 +392,8 @@ def pause():
 
 VIDEO_EXTS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.m4v', '.webm'}
 AUDIO_EXTS = {'.mp3', '.aac', '.m4a', '.flac', '.wav', '.ogg', '.opus', '.mka', '.ac3', '.eac3'}
-IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.tiff', '.tif', '.bmp', '.heic'}
+IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.tiff', '.tif', '.bmp', '.heic', '.heif'}
+HEIC_EXTS  = {'.heic', '.heif'}
 RAW_EXTS   = {'.cr2', '.cr3', '.nef', '.arw', '.dng', '.orf', '.rw2', '.raw'}
 DOC_EXTS   = {'.docx', '.doc'}
 ODT_EXTS   = {'.odt'}
@@ -2091,6 +2092,37 @@ def act_raw_to_jpg(path: str):
     pause()
 
 
+def act_heic_to_jpg(path: str):
+    """path is a directory — HEIC/HEIF → JPEG in place (EXIF + ICC preserved)."""
+    label = os.path.basename(path) or path
+    print(f'\n  {bold("HEIC → JPEG")}  {dim(label)}\n')
+
+    quality = ask('JPEG quality (1–100)', '95')
+    rec_idx = select_menu([('Yes — include subfolders','default'),('No  — top only','')], title='Recursive')
+    if rec_idx is None: return
+    ow_idx  = select_menu([('No  — skip existing','default'),('Yes — overwrite','')], title='Overwrite existing')
+    if ow_idx  is None: return
+    del_idx = select_menu([('No  — keep HEIC originals','default'),
+                           ('Yes — delete each HEIC after a verified conversion','')],
+                          title='Delete sources')
+    if del_idx is None: return
+
+    details = [('Folder',label),('Quality',quality),('Chroma','4:4:4 (minimal loss)'),
+               ('Recursive','yes' if rec_idx==0 else 'no'),
+               ('Overwrite','yes' if ow_idx==1  else 'no'),
+               ('Delete HEIC','yes' if del_idx==1 else 'no')]
+    if not confirm(details): return
+
+    args = [path, '--quality', quality]
+    if rec_idx == 1: args.append('--no-recursive')
+    if ow_idx  == 1: args.append('--overwrite')
+    if del_idx == 1: args.append('--delete-heics')
+    print()
+    rc = _py(_FOLDER_REGISTRY['heic-to-jpg']['script'], *args)
+    _show_result(rc)
+    pause()
+
+
 def act_image_dedup(path: str):
     """path is a directory — exact (SHA-256) duplicate detection → duplicates.json."""
     label = os.path.basename(path) or path
@@ -2251,6 +2283,8 @@ _ACTION_CAT = {
     'Create thumbnails':          'Image',
     'Convert folder RAWs to JPEG':'Image',
     'RAW → JPEG':                 'Image',
+    'Convert folder HEICs to JPEG':'Image',
+    'HEIC → JPEG':                'Image',
     'Find duplicate images':      'Image',
     'Git Pull All':               'Developer',
 }
@@ -2307,6 +2341,8 @@ def _actions_for(path: str) -> list[tuple[str, str, callable]]:
             acts.append(('Create thumbnails', 'batch JPEG/video thumbnails',           act_thumbnails))
         if RAW_EXTS & exts:
             acts.append(('RAW → JPEG',        'batch convert all RAW files',           act_raw_to_jpg))
+        if HEIC_EXTS & exts:
+            acts.append(('HEIC → JPEG',       'batch convert all HEIC/HEIF files',     act_heic_to_jpg))
         if (IMAGE_EXTS | RAW_EXTS) & exts:
             acts.append(('Find duplicate images', 'exact dedup (SHA-256) → duplicates.json', act_image_dedup))
         return acts
@@ -2360,6 +2396,9 @@ def _actions_for(path: str) -> list[tuple[str, str, callable]]:
     if ext in RAW_EXTS:
         acts += [('Convert folder RAWs to JPEG', 'batch convert all RAWs in this folder',
                   lambda p: act_raw_to_jpg(os.path.dirname(p)))]
+    if ext in HEIC_EXTS:
+        acts += [('Convert folder HEICs to JPEG', 'batch convert all HEIC/HEIF in this folder',
+                  lambda p: act_heic_to_jpg(os.path.dirname(p)))]
 
     return acts
 

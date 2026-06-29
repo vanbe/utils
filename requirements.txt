@@ -7,6 +7,7 @@ torchaudio
 
 # Picture utilities (actions/picture_utils)
 Pillow>=10.0.0
+pillow-heif>=0.13.0  # heic2jpeg.py — HEIC/HEIF → JPEG (libheif bundled in wheel)
 rawpy==0.25.1
 imageio==2.31.2
 imagehash==4.3.1  # perceptual hashing — image_dedup.py --method perceptual

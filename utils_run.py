@@ -19,6 +19,7 @@ Exit codes: 0 = ok / list printed, 1 = error, 2 = bad usage
 Folder actions (operate on a directory):
     image-dedup      <dir>  → duplicates.json   (exact SHA-256 duplicate groups)
     raw-to-jpg       <dir>  → JPEGs in place     (rawpy + exiftool)
+    heic-to-jpg      <dir>  → JPEGs in place     (pillow-heif; EXIF+ICC preserved)
     thumbnails       <dir>  → thumbnails         (Pillow/ffmpeg; supports --mirror)
 
 JSON — list mode:
@@ -159,6 +160,11 @@ _FOLDER_REGISTRY: dict[str, dict] = {
         'script': os.path.join(_PIC, 'raw2jpeg.py'),
         'output': None,        # in-place, many outputs
         'desc':   'Convert every RAW image in the folder to JPEG (rawpy + exiftool)',
+    },
+    'heic-to-jpg': {
+        'script': os.path.join(_PIC, 'heic2jpeg.py'),
+        'output': None,        # in-place, many outputs
+        'desc':   'Convert every HEIC/HEIF image in the folder to JPEG (pillow-heif, EXIF+ICC preserved)',
     },
     'thumbnails': {
         'script': os.path.join(_PIC, 'thumbnailing.py'),

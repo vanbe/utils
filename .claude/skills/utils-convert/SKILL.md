@@ -103,7 +103,8 @@ python3 "$UTILS_RUN" --folder <dir> <action> [extra args]    # run one (args pas
 | `image-dedup`  | dir   | `<dir>/duplicates.json`       | Duplicate groups. `--method exact` (SHA-256, default) or `perceptual` (imagehash, `--threshold N`, groups are `decision:pending` to review) |
 | `image-index`  | dir   | `<dir>/.image_index.json`     | Incremental SHA-256 index of a library (path→hash). `--exclude <subdir>` (repeatable). For O(1) "do I already have this?" lookups |
 | `raw-to-jpg`   | dir   | JPEGs in place                | RAW → JPEG (rawpy + exiftool); `--delete-raws`                 |
+| `heic-to-jpg`  | dir   | JPEGs in place                | HEIC/HEIF → JPEG (pillow-heif; EXIF + ICC preserved, orientation normalised). `-q/--quality` (default 95, 4:4:4 chroma), `--no-recursive`, `--overwrite`, `--delete-heics` (deletes each source only after a verified conversion) |
 | `thumbnails`   | dir   | thumbnails                    | Pillow/ffmpeg; `--mirror` to sync deletions                   |
 
 Success JSON for `image-dedup`: `{"status":"ok","output_file":"/abs/<dir>/duplicates.json"}`.
-For in-place actions (raw-to-jpg, thumbnails) there is no single output file: `{"status":"ok"}`.
+For in-place actions (raw-to-jpg, heic-to-jpg, thumbnails) there is no single output file: `{"status":"ok"}`.
