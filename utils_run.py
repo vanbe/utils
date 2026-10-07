@@ -62,6 +62,7 @@ if not os.path.exists(_PYTHON):
 _DOC    = os.path.join(_DIR, 'actions', 'document_utils')
 _AI     = os.path.join(_DIR, 'actions', 'ai_utils')
 _PIC    = os.path.join(_DIR, 'actions', 'picture_utils')
+_AUD    = os.path.join(_DIR, 'actions', 'audio_utils')
 
 
 def _stem(path: str) -> str:
@@ -131,6 +132,14 @@ _REGISTRY: dict[str, dict] = {
         'output': lambda p: _stem(p) + '.pdf',
         'ext':    {'.pptx', '.ppt'},
         'desc':   'Convert PowerPoint to PDF (LibreOffice)',
+    },
+    'meeting-report': {
+        # Nom de sortie dynamique (« AAAA-MM-JJ - Sujet », sujet généré par l'IA) → le
+        # script renvoie lui-même son JSON résultat (`json_result`), relayé tel quel.
+        'script': os.path.join(_AUD, 'meeting_report.py'),
+        'json_result': True,
+        'ext':    {'.m4a', '.mp3', '.wav', '.flac', '.ogg', '.opus', '.aac', '.webm', '.mka'},
+        'desc':   'Meeting → transcript + AI report into ./Traité (OVH via LiteLLM, no GPU)',
     },
     'xls-to-pdf': {
         'script': os.path.join(_DOC, 'xls_to_pdf.py'),
@@ -208,6 +217,15 @@ def _run(path: str, action: str) -> dict:
 
     extra = info.get('extra', lambda p: [])(path)
     cmd   = [_PYTHON, info['script'], path] + extra
+
+    if info.get('json_result'):
+        # Le script imprime son propre JSON en dernière ligne de stdout (progression sur stderr).
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=sys.stderr, text=True)
+        lines = proc.stdout.strip().splitlines()
+        try:
+            return json.loads(lines[-1])
+        except (IndexError, ValueError):
+            return {'status': 'error', 'message': f'Script exited with code {proc.returncode}'}
 
     # Route all script output to our stderr so stdout stays clean for JSON.
     proc = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)

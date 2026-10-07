@@ -51,6 +51,7 @@ Progress and logs from the underlying tool go to stderr — only JSON on stdout.
 | `md-to-pdf`      | `.md`             | `<base>.pdf`           | pandoc + XeLaTeX      |
 | `ppt-to-pdf`     | `.pptx` / `.ppt`  | `<base>.pdf`           | LibreOffice           |
 | `xls-to-pdf`     | `.xlsx` / `.xls`  | `<base>.pdf`           | LibreOffice           |
+| `meeting-report` | audio (`.m4a` `.mp3` `.wav` `.flac` `.ogg` `.opus` `.aac` `.webm` `.mka`) | `Traité/AAAA-MM-JJ - Sujet.md` (+ `_original`, `_enhanced.m4a`, `.srt`, `_brut.md`) | OVH whisper-large-v3 + LLM via LiteLLM (no GPU) |
 
 ## Common patterns
 
@@ -108,3 +109,13 @@ python3 "$UTILS_RUN" --folder <dir> <action> [extra args]    # run one (args pas
 
 Success JSON for `image-dedup`: `{"status":"ok","output_file":"/abs/<dir>/duplicates.json"}`.
 For in-place actions (raw-to-jpg, heic-to-jpg, thumbnails) there is no single output file: `{"status":"ok"}`.
+
+### `meeting-report` notes
+- **Moves the source audio** into `<dir>/Traité/` (renamed `<base>_original.<ext>`), so run it on
+  a copy if the original must stay in place. The JSON result carries `final_md`, `subject`,
+  `meeting_type`, `cost_eur`, `participants` (output name is chosen by the AI: no fixed suffix).
+- A multichannel FLAC from *Record audio* (with `<name>.channels.json`) gets exact Moi/Système
+  attribution; any other audio is diarised (`Speaker N`).
+- Needs `INFERENCE_BASE_URL` / `INFERENCE_API_KEY` (LiteLLM gateway) and `OVH_AI_API_KEY`
+  (diarisation) in the utils `.env`. Audio and transcript are sent to OVH (EU) — not local.
+

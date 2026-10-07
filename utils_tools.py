@@ -10,6 +10,7 @@ Usage (Windows): utils_tools           (via install/windows/utils_tools.bat in P
 
 import os
 import sys
+import json
 import subprocess
 import argparse
 import tty
@@ -23,7 +24,7 @@ from datetime import datetime
 
 # Source de vérité des scripts d'opérations dossier (chemins partagés avec la CLI
 # utils_run.py — évite toute dérive de chemin entre le TUI et la CLI).
-from utils_run import _FOLDER_REGISTRY
+from utils_run import _FOLDER_REGISTRY, _REGISTRY
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -664,6 +665,32 @@ def _act_transcribe_channels(path: str):
     if aec_idx == 1: args.append('--aec')
     rc = _py(os.path.join(_AUDIO_UTILS, 'transcribe_channels.py'), *args)
     _show_result(rc, os.path.join(os.path.dirname(path), base + '.md'))
+    pause()
+
+
+def act_meeting_report(path: str):
+    """Compte rendu de réunion distant (OVH via LiteLLM, sans GPU) : transcription
+    (Moi/Système par canal ou diarisation) + compte rendu + transcript rédigé →
+    ./Traité/« AAAA-MM-JJ - Sujet ». ⚠ DÉPLACE l'audio source (→ _original)."""
+    name = os.path.basename(path)
+    print(f'\n  {bold("Meeting report")}  {dim(name)}\n')
+    if not confirm([('File', name),
+                    ('Inference', 'OVH AI Endpoints (EU) via LiteLLM — audio envoyé hors machine'),
+                    ('Output', 'Traité/AAAA-MM-JJ - Sujet.md (+ _enhanced.m4a, .srt, _brut.md)'),
+                    ('Source', 'déplacée dans Traité/ (renommée _original)')]):
+        return
+    print()
+    proc = subprocess.run([_PYTHON, _REGISTRY['meeting-report']['script'], path],
+                          stdout=subprocess.PIPE, text=True)
+    try:
+        res = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        res = {'status': 'error', 'message': f'exit {proc.returncode}'}
+    if res.get('status') == 'ok':
+        _show_result(0, res['final_md'])
+        print(dim(f"  {res.get('meeting_type')} · {res.get('cost_eur')} €"))
+    else:
+        print(err(f"  ✗ {res.get('message')}"))
     pause()
 
 
@@ -2263,6 +2290,7 @@ _ACTION_CAT = {
     'MinerU OCR':                 'AI',
     'Transcribe':                 'Audio',
     'Record audio':               'Audio',
+    'Meeting report':             'Audio',
     'Extract audio':              'Audio',
     'Convert to MP3':             'Audio',
     'Improve quality':            'Audio',
@@ -2360,6 +2388,7 @@ def _actions_for(path: str) -> list[tuple[str, str, callable]]:
     if ext in AUDIO_EXTS:
         acts += [
             ('Transcribe',      'speech → Markdown / SRT  (Whisper)', act_transcribe),
+            ('Meeting report',  'transcript + AI report  (OVH, no GPU)', act_meeting_report),
             ('Convert to MP3',  're-encode at chosen quality',          act_convert_mp3),
             ('Improve quality', 'EBU R128 loudness normalization',      act_improve_audio),
             ('Compress',        'choose format + bitrate',              act_compress_audio),

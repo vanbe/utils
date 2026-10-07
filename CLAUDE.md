@@ -432,6 +432,56 @@ attribuée à « Moi » sans correspondance texte sur « Système » (donc
 
 ---
 
+## Compte rendu de réunion DISTANT (action « Meeting report », sans GPU)
+
+`actions/audio_utils/meeting_report.py` (+ `meeting_audio.py`, `meeting_llm.py`,
+`inference_client.py`) : audio → transcription **OVH AI Endpoints** (whisper-large-v3)
+→ compte rendu + transcript rédigé (LLM) → `<dossier>/Traité/`. Né du passage à un
+laptop sans GPU ; tourne aussi en batch dans **Airflow office** (DAG
+`vanbe_audio_transcribe`, image `utils:latest`, repo bind-monté → **la branche
+checkoutée dans `/root/code/utils` sur dockerlocal EST la prod du DAG**).
+Câblé : `_REGISTRY['meeting-report']` (`json_result: True` — nom de sortie dynamique,
+le script renvoie son JSON), SKILL.md, TUI (`act_meeting_report`, menu audio).
+
+- **Passerelle** : appels OpenAI-compatibles **stdlib seule** (urllib) vers le LiteLLM
+  perso (`INFERENCE_BASE_URL`/`INFERENCE_API_KEY`) par **alias de rôle** : `asr`,
+  `meeting-summary` (gpt-oss-120b, reasoning low), `meeting-rewrite` (Qwen3.8-27B,
+  `reasoning_effort: none`). Changer de modèle / router vers un nœud GPU local = config
+  LiteLLM, jamais le code. Overrides `.env` : `ASR_MODEL`, `MEETING_SUMMARY_MODEL`,
+  `MEETING_REWRITE_MODEL`, `MEETING_SELF_NAME`, `MEETING_REPORT_LANGUAGE`.
+- ⚠ **Diarisation = OVH DIRECT** (`OVH_AI_API_KEY`) : l'endpoint OpenAI de LiteLLM
+  re-modélise la réponse et **perd le champ `diarization`** ; le pass-through avec clé
+  virtuelle (`allowed_passthrough_routes`) est **Enterprise**. Ne pas « simplifier »
+  en repassant la diarisation par LiteLLM.
+- ⚠ **`chunking_strategy=auto` toujours envoyé** : sans VAD serveur, Whisper OVH
+  hallucine sur les fenêtres silencieuses (« Sous-titrage ST' 501 », vérifié).
+- ⚠ **Qwen sur OVH raisonne TOUJOURS** : `chat_template_kwargs` → 400, `reasoning_effort:
+  low` ignoré (sortie tronquée, tout le budget part en raisonnement). Seul
+  `reasoning_effort: none` le coupe (astuce Idonis, `moniteur/mandates.py`).
+- **Config unique** : langue auto **par tranche** de 600 s de parole (réunions
+  multilingues) ; réhaussement partout (`ENHANCE_CHAIN` = `SPEECH_ENHANCE_FILTERS` +
+  loudnorm) ; **AEC automatique** si `echo_coherence` micro↔sortie > 0.3 (casque ≈ 0.03) —
+  AEC sur le BRUT (filtre linéaire), en streaming par blocs ; **blancs retirés** (VAD
+  énergie relatif sur le brut, le dynaudnorm remontant le bruit) puis timestamps
+  restaurés via `TimeMap`.
+- **Locuteurs** : micro = « Moi » (non diarisé) ; sorties et audio simple = diarisés en
+  **une requête** (numéros cohérents seulement DANS une requête → limite 10 000 s de
+  parole par requête) → « Système · Sn » / « Speaker n ». L'analyse LLM nomme les
+  locuteurs seulement si c'est certain (sinon l'étiquette reste).
+- **LLM** : 2 h ≈ 110 k car. ≈ 32 k tokens → analyse + compte rendu d'un bloc ; le
+  transcript rédigé (sortie ≈ entrée) par tranches de 6 k car. en parallèle (3), avec la
+  fin BRUTE de la tranche précédente comme contexte. > 300 k car. → map-reduce (notes).
+  Banc du 2026-10-07 (même extrait) : Qwen3.8-27B (none) le plus fidèle + correctif ;
+  Mistral-Small / Llama-3.3-70B fidèles mais corrigent peu ; gpt-oss-120b condense.
+- **Sorties** `Traité/<AAAA-MM-JJ - Sujet>` : `_original.<ext>` (+ `.channels.json`),
+  `_enhanced.m4a` (stéréo G=Moi / D=autres, 16 kHz), `.srt`, `_brut.md`, `.md` (front-matter
+  **OKF** `type: meeting-transcript` : langues, durée, parole, canaux, locuteurs, coûts…).
+  Sujet = titre du nom de fichier s'il n'est pas générique (« capture »…), sinon l'IA.
+  **L'original est déplacé EN DERNIER** (un échec avant le laisse en place → retraitable).
+- **Coût mesuré** : 10 min de réunion 2 canaux ≈ 0,026 € (ASR ≈ 90 %).
+
+---
+
 ## Recurring problems
 
 ### FLAC multicanal : VLC (ou un lecteur) ne joue que la piste micro
