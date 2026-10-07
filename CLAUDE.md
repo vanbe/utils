@@ -459,8 +459,9 @@ le script renvoie son JSON), SKILL.md, TUI (`act_meeting_report`, menu audio).
   low` ignoré (sortie tronquée, tout le budget part en raisonnement). Seul
   `reasoning_effort: none` le coupe (astuce Idonis, `moniteur/mandates.py`).
 - **Config unique** : langue auto **par tranche** de 600 s de parole (réunions
-  multilingues) ; réhaussement partout (`ENHANCE_CHAIN` = `SPEECH_ENHANCE_FILTERS` +
-  loudnorm) ; **AEC automatique** si `echo_coherence` micro↔sortie > 0.3 (casque ≈ 0.03) —
+  multilingues) ; réhaussement (`ENHANCE_CHAIN` = `SPEECH_ENHANCE_FILTERS` + loudnorm) du
+  micro et de l'audio simple — **pas des sorties système** (loopback numérique sans bruit ;
+  afftdn mono-cœur ≈ 40 % du temps total sur 2 vCPU pour rien) ; **AEC automatique** si `echo_coherence` micro↔sortie > 0.3 (casque ≈ 0.03) —
   AEC sur le BRUT (filtre linéaire), en streaming par blocs ; **blancs retirés** (VAD
   énergie relatif sur le brut, le dynaudnorm remontant le bruit) puis timestamps
   restaurés via `TimeMap`.

@@ -8,7 +8,8 @@ meeting_report.py — compte rendu de réunion de bout en bout, inférence DISTA
 
 Configuration unique (« one fits all ») :
   • langue auto (détectée PAR TRANCHE de ~10 min de parole → réunions multilingues) ;
-  • réhaussement (highpass + débruitage + dynaudnorm + loudnorm) partout ;
+  • réhaussement (highpass + débruitage + dynaudnorm + loudnorm) du micro et de l'audio
+    simple ; les sorties système (loopback numérique, sans bruit) restent brutes ;
   • anti-écho AUTOMATIQUE (seulement si le micro recapte les haut-parleurs) ;
   • blancs retirés avant envoi (coût ≈ durée de parole), timestamps restaurés ;
   • FLAC multicanal + channels.json : « Moi » = micro (attribution exacte), sorties
@@ -206,7 +207,13 @@ def run(path: str, done_dir: str | None = None, self_name: str | None = None,
         enh, segs = {}, []
         for s in sources:
             enh[s['index']] = os.path.join(tmp, f'enh{s["index"]}.wav')
-            ma.enhance(raws[s['index']], enh[s['index']])
+            if s['kind'] == 'output':
+                # Sortie système = copie NUMÉRIQUE de ce qui est joué (loopback) : ni bruit de
+                # pièce ni distance → le débruitage n'apporte rien et coûte ~40 % du temps
+                # total sur 2 vCPU (afftdn mono-cœur). Whisper normalise déjà le niveau.
+                enh[s['index']] = raws[s['index']]
+            else:
+                ma.enhance(raws[s['index']], enh[s['index']])
             regions = ma.speech_regions(ma.read_wav(raws[s['index']]))
             speech = sum(e - b for b, e in regions)
             log(f'source {s["label"] or "audio"} : {speech / 60:.1f} min de parole '
@@ -328,7 +335,8 @@ def run(path: str, done_dir: str | None = None, self_name: str | None = None,
                 'asr_route': f'{_env_or_dotenv("ASR_MODEL") or "asr"} via LiteLLM ; diarisation OVH direct',
                 'llm_summary': None if no_llm else ml._model('summary'),
                 'llm_rewrite': None if no_llm else ml._model('rewrite'),
-                'enhance': True, 'silence_removed': True,
+                'enhance': 'micro/audio simple (sorties système : brutes)',
+                'silence_removed': True,
                 'aec': aec_applied, 'echo_coherence': (round(echo_score, 3)
                                                        if echo_score is not None else None)},
             'cost_eur': {'asr': round(stats['asr_cost'], 4), 'llm': round(usage.cost, 4),
