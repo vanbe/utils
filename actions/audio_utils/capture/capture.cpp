@@ -115,6 +115,18 @@ static int do_list() {
     const EDataFlow flows[2] = {eCapture, eRender};
     const char* kinds[2]     = {"input", "output"};
 
+    // Périphériques par défaut de l'utilisateur (rôle eConsole) → champ "default"
+    // (présélection dans la TUI quand aucun périphérique préféré n'est présent).
+    std::string def_ids[2];
+    for (int fi = 0; fi < 2; ++fi) {
+        IMMDevice* d = nullptr;
+        if (SUCCEEDED(en->GetDefaultAudioEndpoint(flows[fi], eConsole, &d)) && d) {
+            LPWSTR w = nullptr;
+            if (SUCCEEDED(d->GetId(&w)) && w) { def_ids[fi] = wide_to_utf8(w); CoTaskMemFree(w); }
+            d->Release();
+        }
+    }
+
     for (int fi = 0; fi < 2; ++fi) {
         IMMDeviceCollection* col = nullptr;
         if (FAILED(en->EnumAudioEndpoints(flows[fi], DEVICE_STATE_ACTIVE, &col)) || !col)
@@ -140,9 +152,9 @@ static int do_list() {
                 if (name.empty()) name = id;
                 if (!first) fputs(",", stdout);
                 first = false;
-                printf("{\"id\":\"%s\",\"name\":\"%s\",\"kind\":\"%s\",\"channels\":%d}",
+                printf("{\"id\":\"%s\",\"name\":\"%s\",\"kind\":\"%s\",\"channels\":%d,\"default\":%s}",
                        json_escape(id).c_str(), json_escape(name).c_str(),
-                       kinds[fi], channels);
+                       kinds[fi], channels, id == def_ids[fi] ? "true" : "false");
                 CoTaskMemFree(idw);
             }
             dev->Release();

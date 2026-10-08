@@ -106,6 +106,20 @@ fi
 echo "  → $WIN_BIN\\utils_tools.bat  (CMD)"
 echo "  → $WIN_BIN\\utils_tools.ps1  (PowerShell)"
 
+# Lanceurs `record` : mêmes fichiers, l'appel passe --record (Record audio direct dans
+# le dossier Windows courant). Dérivés des copies déjà spécialisées ci-dessus.
+sed -e 's|--workdir "!WSL_CWD!"|--record --workdir "!WSL_CWD!"|' \
+    -e 's|^:: Utils Tools - Windows launcher (CMD)|:: Utils Tools - record launcher (CMD) - Record audio in current folder|' \
+    "$WSL_BIN/utils_tools.bat" > "$WSL_BIN/record.bat" \
+    || { echo "✗ Copie de record.bat impossible." >&2; exit 1; }
+sed -e 's|--workdir \$wslPath|--record --workdir $wslPath|' \
+    -e 's|^# Utils Tools - Windows PowerShell launcher|# Utils Tools - record launcher (PowerShell) - Record audio in current folder|' \
+    "$WSL_BIN/utils_tools.ps1" > "$WSL_BIN/record.ps1" \
+    || { echo "✗ Copie de record.ps1 impossible." >&2; exit 1; }
+grep -q -- '--record' "$WSL_BIN/record.bat" && grep -q -- '--record' "$WSL_BIN/record.ps1" \
+    || echo "  ⚠ record.bat / record.ps1 : option --record non injectée (vérifier le sed)"
+echo "  → $WIN_BIN\\record.bat / record.ps1  (Record audio dans le dossier courant)"
+
 # PATH utilisateur (HKCU) — aucun droit admin requis, et on ne touche jamais au
 # PATH machine. L'entrée n'est ajoutée que si elle est absente.
 PATH_STATUS="$(cd /mnt/c && "$PS" -NoProfile -NonInteractive -Command "
@@ -133,3 +147,4 @@ esac
 echo ""
 echo "  Depuis n'importe quel dossier Windows (après redémarrage du terminal) :"
 echo "      utils_tools"
+echo "      record          (enregistre directement dans le dossier courant)"

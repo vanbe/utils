@@ -1023,7 +1023,9 @@ def _record_lines(rec, sources, out_path, transcript=None, confirming=False) -> 
     head.append(f'  {dim("File:")}  {hi(fname)}')
     head.append(f'  {dim("Time:")}  {bold(_fmt_dur(rec.elapsed()))}'
                 f'    {dim("Size:")} {_size(out_path) or "—"}'
-                f'    {dim("Format:")} {rec.rate} Hz · {rec.total_channels}ch FLAC')
+                f'    {dim("Format:")} {rec.rate} Hz · '
+                + (f'{rec.file_channels}ch Opus ({recorder.opus_kbps_per_channel()} kb/s/canal)'
+                   if rec.codec == 'opus' else f'{rec.total_channels}ch FLAC'))
     head.append(f'  {_bar()}')
     # En pause, la capture est gelée (SIGSTOP) → pas de nouveaux niveaux : on
     # affiche 0 plutôt que de laisser les barres figées sur la dernière valeur.
@@ -1235,6 +1237,9 @@ def act_record_audio(dirpath: str):
     inputs  = [s for s in sources if s['kind'] == 'input']
     outputs = [s for s in sources if s['kind'] == 'output']
     items, headers, meta = [], set(), []
+    # Présélection : périphérique préféré (Jabra, casque…) > dernier utilisé > défaut
+    # système → un simple Entrée lance la capture habituelle.
+    pre_ids = {s['id'] for s in recorder.preselect_sources(sources)}
     if inputs:
         headers.add(len(items)); items.append((f'{_GRN}ENTRÉES (micros){_R}', '')); meta.append(None)
         for s in inputs:
@@ -1244,9 +1249,10 @@ def act_record_audio(dirpath: str):
         for s in outputs:
             items.append((s['name'], f"{s['channels']}ch")); meta.append(s)
 
+    preselected = {i for i, m in enumerate(meta) if m is not None and m['id'] in pre_ids}
     sel = multiselect_menu(items, title='Sources à capturer',
                            subtitle='Espace pour (dé)cocher · Entrée pour valider',
-                           headers=headers)
+                           headers=headers, preselected=preselected)
     if not sel:
         return
     chosen = [meta[i] for i in sel if meta[i] is not None]
@@ -1254,6 +1260,7 @@ def act_record_audio(dirpath: str):
         print(warn('  Aucune source sélectionnée.'))
         pause()
         return
+    recorder.save_last_sources(chosen)          # présélection du prochain lancement
 
     # Transcription live (optionnelle)
     t_idx = select_menu([
@@ -1337,14 +1344,18 @@ def act_record_audio(dirpath: str):
       while True:
         default_base = recorder.default_basename()
         name = ask('Nom du fichier', default_base) or default_base
-        if name.lower().endswith('.flac'):
-            name = name[:-5]
-        out_path = recorder.unique_path(dirpath, name, 'flac')
+        codec = recorder.record_codec()
+        ext = recorder.codec_ext(codec)
+        for e in ('.flac', '.opus'):
+            if name.lower().endswith(e):
+                name = name[:-len(e)]
+        out_path = recorder.unique_path(dirpath, name, ext)
 
         details = [
             ('Folder',   dirpath),
             ('Sources',  ', '.join(s['name'] for s in chosen)),
-            ('Channels', str(sum(int(s['channels']) for s in chosen))),
+            ('Format',   ('Opus · 1 canal par source' if codec == 'opus'
+                          else f"FLAC · {sum(int(s['channels']) for s in chosen)} canaux")),
             ('File',     os.path.basename(out_path)),
         ]
         if want_trans:
@@ -1357,7 +1368,7 @@ def act_record_audio(dirpath: str):
             return
 
         try:
-            rec = recorder.Recorder(chosen, out_path, backend=backend)
+            rec = recorder.Recorder(chosen, out_path, backend=backend, codec=codec)
         except Exception as e:
             print(err(f'  ✗ {e}'))
             pause()
@@ -2497,6 +2508,8 @@ def main():
     parser = argparse.ArgumentParser(description='Utils Tools — interactive TUI.')
     parser.add_argument('--workdir', default=os.getcwd(),
                         help='Starting directory (passed by Windows launcher)')
+    parser.add_argument('--record', action='store_true',
+                        help='Lance directement « Record audio » dans le dossier (commande `record`)')
     args = parser.parse_args()
 
     workdir = os.path.abspath(args.workdir)
@@ -2508,6 +2521,17 @@ def main():
 
     sys.stdout.write('\033[2J\033[H')
     sys.stdout.flush()
+
+    if args.record:
+        try:
+            act_record_audio(workdir)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            sys.stdout.write(_SHOW)
+            sys.stdout.flush()
+        print()
+        return
 
     last_dir = workdir
     try:

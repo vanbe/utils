@@ -37,8 +37,10 @@ build.bat
 
 ```
 capture.exe --list
-    → stdout : JSON [{"id","name","kind":"input|output","channels":N}, ...]
+    → stdout : JSON [{"id","name","kind":"input|output","channels":N,"default":bool}, ...]
       render endpoints → "output" (loopback) ; capture endpoints → "input"
+      "default" = périphérique par défaut de l'utilisateur (rôle eConsole) — ajouté le
+      2026-10-08 (présélection TUI) ; reconstruire le binaire pour l'obtenir
 
 capture.exe --rate 48000 --source <id> [--source <id> ...]
     → stdout : PCM s16le interleavé (canaux de la source 0, puis 1, ...),

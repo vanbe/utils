@@ -159,8 +159,31 @@ the paging cliff by several layers.
 
 ## Audio recording (action "Record audio")
 
-Capture multi-sources (micros + sorties système) → **un seul FLAC multicanal** +
-sidecar `<name>.channels.json` (map canal→source). Transcription par canal en
+Capture multi-sources (micros + sorties système) → **un seul fichier multicanal** +
+sidecar `<name>.channels.json` (map canal du FICHIER → source).
+
+- **Format (2026-10-08) : Opus par défaut** (`RECORD_CODEC=opus|flac`) — **1 canal mono
+  par source** (moyenne de ses canaux) en Ogg Opus, canaux **discrets**
+  (`-mapping_family 255` : pas de couplage stéréo Moi↔Système), `RECORD_OPUS_KBPS`
+  par canal (24, `-application voip`). ≈ **12 Mo/h** contre ≈ 240 Mo/h en FLAC 4 canaux.
+  Banc (10 min de réunion, whisper-large-v3 OVH, transcription déterministe sur un même
+  fichier) : 24 kb/s ≈ FLAC (similarité 0,95, écarts sur du jargon mal reconnu dans les
+  DEUX), 16 kb/s 0,92. ⚠ **Deux cartes de canaux** : `Recorder.channel_map()` = PCM
+  capturé (tee de la transcription LIVE, tous les canaux, inchangé) ;
+  `file_channel_map()` = le fichier (→ sidecar). Ne pas les confondre. L'AEC différée
+  sur un fichier Opus marche moins bien que sur du PCM (codec perceptuel) — le live,
+  lui, travaille sur le PCM brut. Linux : `aformat=s16:<layout>` après `aresample`,
+  sinon `amerge`+`asplit` ne négocient pas les formats.
+- **Présélection des sources** (`recorder.preselect_sources`) : par type (1 entrée +
+  1 sortie) → périphérique **préféré** (`RECORD_PREFERRED_DEVICES`, défaut
+  « jabra,headset,casque,headphone », dans l'ordre) > **dernier utilisé**
+  (`~/.config/utils/record.json`, id puis nom) > **défaut système** (champ `default`
+  de `capture.exe --list` — ajouté 2026-10-08, un ancien binaire ne le donne pas → il
+  faut le reconstruire ; `pactl get-default-source/-sink` sous Linux). Un simple
+  Entrée lance la capture habituelle.
+- **Commande `record`** (install.sh → `~/.local/bin/record` ; Windows :
+  `record.bat`/`record.ps1` dérivés des lanceurs utils_tools) = `utils_tools.py --record`
+  → *Record audio* directement dans le dossier courant, sans passer par le navigateur. Transcription par canal en
 direct (`live_transcribe.py`) ou différée (`transcribe_channels.py`). **Action de
 dossier, TUI-only.**
 

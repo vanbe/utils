@@ -146,6 +146,13 @@ report() {
         missing=1
     fi
 
+    if [ -x "$BIN_DIR/record" ]; then
+        printf '  ✓ %-14s %s\n' 'record' "$BIN_DIR/record"
+    else
+        printf '  ✗ %-14s %s   ← MANQUANT\n' 'record' "$BIN_DIR/record"
+        missing=1
+    fi
+
     if is_wsl; then
         if [ -f "$SCRIPT_DIR/actions/audio_utils/bin/capture.exe" ]; then
             printf '  ✓ %-14s %s\n' 'capture.exe' 'capture audio Windows (Record audio)'
@@ -343,6 +350,14 @@ EOF
 chmod +x "$CMD_PATH"
 echo "  → $CMD_PATH"
 
+# Commande `record` : lance directement « Record audio » dans le dossier courant
+cat > "$BIN_DIR/record" << EOF
+#!/bin/bash
+exec "$VENV_PY" "$SCRIPT_DIR/utils_tools.py" --record "\$@"
+EOF
+chmod +x "$BIN_DIR/record"
+echo "  → $BIN_DIR/record"
+
 # Ajouter ~/.local/bin au PATH dans ~/.bashrc s'il n'y est pas déjà
 if ! grep -q 'HOME/.local/bin' "$HOME/.bashrc" 2>/dev/null; then
     {
@@ -385,6 +400,7 @@ report
 
 echo "  utils_tools          ouvre la TUI dans le dossier courant"
 echo "  utils_tools /chemin  ouvre la TUI dans un dossier précis"
+echo "  record               enregistre (Record audio) directement dans le dossier courant"
 echo "  bash install.sh --check   refait le bilan ci-dessus"
 echo ""
 echo "Renseigner AUDIO_UTILS_HF_TOKEN et NAS_* dans .env si besoin."

@@ -2,11 +2,23 @@
 """
 recorder.py — moteur de capture audio multi-sources pour utils.
 
-Première étape vers une app de transcription par canal : enregistre plusieurs
-sources audio (micros + sorties système) dans un **seul fichier FLAC
-multicanal**, accompagné d'un sidecar `<name>.channels.json` qui décrit quel
-intervalle de canaux appartient à quelle source — la base du futur démux +
-transcription par canal (`transcribe_audio.py`).
+Enregistre plusieurs sources audio (micros + sorties système) dans un **seul
+fichier multicanal**, accompagné d'un sidecar `<name>.channels.json` qui décrit
+quel intervalle de canaux du FICHIER appartient à quelle source (démux +
+transcription par canal : `transcribe_channels.py`, `meeting_report.py`).
+
+Format (`RECORD_CODEC`, défaut **opus**) :
+  * opus : **1 canal mono par source** (moyenne de ses canaux) en Ogg Opus,
+           canaux DISCRETS (`mapping_family 255` : aucun couplage stéréo entre
+           Moi et Système), `RECORD_OPUS_KBPS` par canal (défaut 24, mode voip).
+           ≈ 12 Mo/h pour 2 sources, contre ≈ 240 Mo/h en FLAC 4 canaux.
+           Banc 2026-10-08 (10 min de réunion, whisper-large-v3 OVH) : 24 kb/s
+           donne une transcription équivalente au FLAC (similarité 0,95, écarts
+           sur du jargon mal reconnu dans les DEUX versions) ; 16 kb/s s'écarte
+           davantage (0,92).
+  * flac : sans perte, tous les canaux capturés (ancien comportement).
+La transcription LIVE n'est pas concernée : elle lit le PCM brut (tee) avant
+l'encodage — `channel_map()` décrit ce PCM, `file_channel_map()` le fichier.
 
 Backend-aware (la TUI ne voit qu'une interface uniforme) :
 
@@ -19,7 +31,7 @@ Backend-aware (la TUI ne voit qu'une interface uniforme) :
               **rien à installer** côté Windows), lancé en interop WSL. Le
               binaire émet du PCM s16le interleavé sur stdout (ordre = ordre des
               `--source`) et des lignes `LEVEL <idx> <rms>` sur stderr.
-              L'encodage FLAC reste dans WSL avec `ffmpeg`.
+              L'encodage (Opus/FLAC) reste dans WSL avec `ffmpeg`.
 
 Aucune dépendance Python externe au niveau module (stdlib seulement) afin que
 l'import et l'énumération fonctionnent même sur une box headless sans audio.
@@ -43,7 +55,26 @@ CAPTURE_SHA   = CAPTURE_EXE + '.sha256'          # ancre de confiance (épinglag
 CAPTURE_DIR   = os.path.join(_HERE, 'capture')
 CAPTURE_BUILD = os.path.join(CAPTURE_DIR, 'build.sh')
 
-DEFAULT_RATE = 48000
+DEFAULT_RATE = 48000          # Opus travaille nativement à 48 kHz
+
+
+def record_codec() -> str:
+    """Codec d'enregistrement (`RECORD_CODEC` = opus | flac ; défaut opus)."""
+    from whisper_common import _env_or_dotenv     # léger (pas de torch)
+    c = (_env_or_dotenv('RECORD_CODEC') or 'opus').lower()
+    return c if c in ('opus', 'flac') else 'opus'
+
+
+def opus_kbps_per_channel() -> int:
+    from whisper_common import _env_or_dotenv
+    try:
+        return max(12, int(_env_or_dotenv('RECORD_OPUS_KBPS') or 24))
+    except ValueError:
+        return 24
+
+
+def codec_ext(codec: str) -> str:
+    return 'opus' if codec == 'opus' else 'flac'
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +228,16 @@ def _list_sources_linux() -> list[dict]:
             'kind': kind,
             'channels': channels_by_name.get(name, 2 if kind == 'output' else 1),
         })
+    defaults = set()
+    for what, suffix in (('get-default-source', ''), ('get-default-sink', '.monitor')):
+        try:
+            r = subprocess.run(['pactl', what], capture_output=True, text=True, timeout=5)
+            if r.returncode == 0 and r.stdout.strip():
+                defaults.add(r.stdout.strip() + suffix)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    for src in sources:
+        src['default'] = src['id'] in defaults
     return sources
 
 
@@ -223,8 +264,76 @@ def _list_sources_wsl() -> list[dict]:
             'name': e.get('name', e.get('id', '')),
             'kind': 'output' if kind == 'output' else 'input',
             'channels': int(e.get('channels', 2 if kind == 'output' else 1)),
+            'default': bool(e.get('default', False)),   # absent d'un ancien capture.exe
         })
     return [s for s in sources if s['id']]
+
+
+# ---------------------------------------------------------------------------
+# Présélection des sources (lancement rapide de « Record audio »)
+# ---------------------------------------------------------------------------
+#
+# Par type (1 entrée + 1 sortie), dans l'ordre :
+#   1. périphérique PRÉFÉRÉ présent — mots-clés `RECORD_PREFERRED_DEVICES`
+#      (défaut « jabra,headset,casque,headphone »), dans cet ordre ;
+#   2. le DERNIER utilisé (mémorisé dans ~/.config/utils/record.json) ;
+#   3. le périphérique PAR DÉFAUT de l'utilisateur (Windows / PulseAudio).
+
+_STATE_PATH = os.path.join(os.environ.get('XDG_CONFIG_HOME') or
+                           os.path.join(os.path.expanduser('~'), '.config'),
+                           'utils', 'record.json')
+
+
+def preferred_keywords() -> list[str]:
+    from whisper_common import _env_or_dotenv
+    raw = _env_or_dotenv('RECORD_PREFERRED_DEVICES') or 'jabra,headset,casque,headphone'
+    return [k.strip().lower() for k in raw.split(',') if k.strip()]
+
+
+def load_last_sources() -> list[dict]:
+    try:
+        with open(_STATE_PATH, encoding='utf-8') as f:
+            return json.load(f).get('sources', [])
+    except (OSError, ValueError):
+        return []
+
+
+def save_last_sources(chosen: list[dict]):
+    """Mémorise le choix (id + nom : un id WASAPI peut changer si le périphérique
+    change de port USB, le nom reste)."""
+    try:
+        os.makedirs(os.path.dirname(_STATE_PATH), exist_ok=True)
+        with open(_STATE_PATH, 'w', encoding='utf-8') as f:
+            json.dump({'sources': [{'id': s['id'], 'name': s['name'], 'kind': s['kind']}
+                                   for s in chosen]}, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+def preselect_sources(sources: list[dict], last: list[dict] | None = None,
+                      keywords: list[str] | None = None) -> list[dict]:
+    """→ sources à cocher d'office (au plus 1 entrée + 1 sortie)."""
+    last = load_last_sources() if last is None else last
+    keywords = preferred_keywords() if keywords is None else keywords
+    picked = []
+    for kind in ('input', 'output'):
+        cands = [s for s in sources if s['kind'] == kind]
+        choice = None
+        for kw in keywords:
+            choice = next((s for s in cands if kw in s['name'].lower()), None)
+            if choice:
+                break
+        if not choice:
+            for l in (x for x in last if x.get('kind') == kind):
+                choice = (next((s for s in cands if s['id'] == l.get('id')), None)
+                          or next((s for s in cands if s['name'] == l.get('name')), None))
+                if choice:
+                    break
+        if not choice:
+            choice = next((s for s in cands if s.get('default')), None)
+        if choice:
+            picked.append(choice)
+    return picked
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +346,7 @@ def default_basename(now: time.struct_time | None = None) -> str:
     return time.strftime('%Y-%m-%d-%H-%M', t) + ' - capture'
 
 
-def unique_path(dirpath: str, basename: str, ext: str = 'flac') -> str:
+def unique_path(dirpath: str, basename: str, ext: str = 'opus') -> str:
     """Chemin <dir>/<basename>.<ext>, suffixé d'un compteur si déjà présent."""
     cand = os.path.join(dirpath, f'{basename}.{ext}')
     if not os.path.exists(cand):
@@ -268,14 +377,17 @@ class Recorder:
 
     def __init__(self, sources: list[dict], out_path: str,
                  backend: str | None = None, rate: int = DEFAULT_RATE,
-                 on_pcm=None):
+                 on_pcm=None, codec: str | None = None):
         if not sources:
             raise ValueError('au moins une source est requise')
         self.sources = sources
         self.out_path = out_path
         self.backend = backend or detect_backend()
         self.rate = rate
-        self.total_channels = sum(int(s['channels']) for s in sources)
+        self.total_channels = sum(int(s['channels']) for s in sources)   # PCM capturé
+        self.codec = codec or record_codec()
+        # Canaux du FICHIER : 1 par source en Opus (downmix mono), tous en FLAC.
+        self.file_channels = len(sources) if self.codec == 'opus' else self.total_channels
         # Callback optionnel recevant le PCM s16le interleavé (tee → transcription
         # live). Quand fourni, Python est dans le chemin des données.
         self.on_pcm = on_pcm
@@ -314,17 +426,61 @@ class Recorder:
             start += n
         return {
             'rate': self.rate,
-            'codec': 'flac',
+            'codec': 'pcm_s16le',
             'total_channels': self.total_channels,
             'backend': self.backend,
             'sources': chans,
         }
 
+    def file_channel_map(self) -> dict:
+        """Carte des canaux du FICHIER enregistré (→ sidecar channels.json)."""
+        if self.codec != 'opus':
+            m = self.channel_map()
+            m['codec'] = 'flac'
+            return m
+        chans = []
+        for i, s in enumerate(self.sources):
+            chans.append({'index': i, 'id': s['id'], 'name': s['name'], 'kind': s['kind'],
+                          'channels': 1, 'channel_start': i, 'channel_end': i + 1,
+                          'captured_channels': int(s['channels'])})
+        return {'rate': self.rate, 'codec': 'opus', 'bitrate_kbps_per_channel':
+                opus_kbps_per_channel(), 'total_channels': len(self.sources),
+                'backend': self.backend, 'sources': chans}
+
+    def _file_filter(self, src: str, dst: str) -> str:
+        """Graphe ffmpeg PCM capturé (`src`, total_channels) → canaux du fichier (`dst`).
+        Opus : moyenne des canaux de chaque source → 1 mono par source, fusionnés."""
+        if self.codec != 'opus':
+            return f'[{src}]anull[{dst}]'
+        parts, start, n = [], 0, len(self.sources)
+        tag = re.sub(r'\W', '', src)                 # « 0:a » → « 0a » (« : » interdit en label)
+        labels = [f'{tag}s{i}' for i in range(n)]
+        if n > 1:
+            parts.append(f'[{src}]asplit={n}' + ''.join(f'[{l}]' for l in labels))
+        else:
+            labels = [src]
+        for i, s in enumerate(self.sources):
+            c = int(s['channels'])
+            coef = '+'.join(f'{1.0 / c:.6f}*c{k}' for k in range(start, start + c))
+            parts.append(f'[{labels[i]}]pan=mono|c0={coef}[{tag}m{i}]')
+            start += c
+        if n > 1:
+            parts.append(''.join(f'[{tag}m{i}]' for i in range(n)) + f'amerge=inputs={n}[{dst}]')
+        else:
+            parts.append(f'[{tag}m0]anull[{dst}]')
+        return ';'.join(parts)
+
+    def _encoder_args(self) -> list[str]:
+        if self.codec != 'opus':
+            return ['-c:a', 'flac']
+        return ['-c:a', 'libopus', '-b:a', f'{opus_kbps_per_channel() * self.file_channels}k',
+                '-application', 'voip', '-mapping_family', '255']
+
     def _write_sidecar(self):
         side = os.path.splitext(self.out_path)[0] + '.channels.json'
         try:
             with open(side, 'w', encoding='utf-8') as f:
-                json.dump(self.channel_map(), f, ensure_ascii=False, indent=2)
+                json.dump(self.file_channel_map(), f, ensure_ascii=False, indent=2)
         except OSError:
             pass
 
@@ -340,12 +496,14 @@ class Recorder:
         self._write_sidecar()
 
     def _ffmpeg_pcm_cmd(self) -> list[str]:
-        """ffmpeg lisant du PCM s16le interleavé sur stdin → FLAC multicanal."""
+        """ffmpeg lisant du PCM s16le interleavé sur stdin → fichier (Opus 1 canal/source
+        ou FLAC multicanal)."""
         return [
             'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
             '-f', 's16le', '-ar', str(self.rate), '-ac', str(self.total_channels),
             '-i', 'pipe:0',
-            '-c:a', 'flac', self.out_path,
+            '-filter_complex', self._file_filter('0:a', 'f'), '-map', '[f]',
+            *self._encoder_args(), self.out_path,
         ]
 
     def _start_wsl(self):
@@ -471,15 +629,27 @@ class Recorder:
             # -ac avant -i : force le nb de canaux de l'entrée pulse (sinon stéréo
             # par défaut) pour rester cohérent avec channels.json.
             cmd += ['-f', 'pulse', '-ac', str(int(s['channels'])), '-i', s['id']]
-        chains = [f'[{i}:a]aresample={self.rate}[r{i}]' for i in range(n)]
+        # aformat après aresample : sans format figé, amerge (+ asplit en aval) ne sait
+        # pas négocier les formats (« could not choose their formats »).
+        def _layout(c: int) -> str:
+            return {1: 'mono', 2: 'stereo'}.get(c, f'{c}c')
+        chains = [f'[{i}:a]aresample={self.rate},aformat=sample_fmts=s16:channel_layouts='
+                  f'{_layout(int(s["channels"]))}[r{i}]' for i, s in enumerate(self.sources)]
         if n == 1:
             merge = '[r0]anull[a]'
         else:
             merge = ''.join(f'[r{i}]' for i in range(n)) + f'amerge=inputs={n}[a]'
-        cmd += ['-filter_complex', ';'.join(chains + [merge])]
-        cmd += ['-map', '[a]', '-c:a', 'flac', self.out_path]
+        # [a] = PCM capturé (total_channels) ; dupliqué si on_pcm : une branche pour le
+        # fichier (downmix Opus éventuel), une pour la transcription live (PCM brut).
         if self.on_pcm:
-            cmd += ['-map', '[a]', '-f', 's16le', '-ar', str(self.rate),
+            graph = chains + [merge.replace('[a]', '[a0]'), '[a0]asplit=2[a][p]',
+                              self._file_filter('a', 'f')]
+        else:
+            graph = chains + [merge, self._file_filter('a', 'f')]
+        cmd += ['-filter_complex', ';'.join(graph)]
+        cmd += ['-map', '[f]', *self._encoder_args(), self.out_path]
+        if self.on_pcm:
+            cmd += ['-map', '[p]', '-f', 's16le', '-ar', str(self.rate),
                     '-ac', str(self.total_channels), 'pipe:1']
         self._ff = subprocess.Popen(
             cmd, stdin=subprocess.PIPE,
