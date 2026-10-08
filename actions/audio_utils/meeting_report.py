@@ -194,8 +194,9 @@ def _report_html(subject: str, dt, duration: float, participants: list, analysis
     return (f'<html><head><meta charset="utf-8">{css}</head><body>'
             f'<h2 style="font-size:18px;margin:0 0 4px">{html.escape(subject)}</h2>'
             f'<p style="color:#666;margin:0 0 8px">{html.escape(" · ".join(meta))}</p>{desc}'
-            f'{body}<p style="color:#999;font-size:12px;margin-top:20px">Pièces jointes : transcript '
-            f'rédigé (.md) et transcription brute (_brut.md).</p></body></html>')
+            f'{body}<p style="color:#999;font-size:12px;margin-top:20px">Pièces jointes : compte rendu '
+            f'(_compte-rendu.md), transcript rédigé (.md) et transcription brute (_brut.md).</p>'
+            f'</body></html>')
 
 
 def _fmt_duration(s: float) -> str:
