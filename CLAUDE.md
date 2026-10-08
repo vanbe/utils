@@ -459,9 +459,13 @@ le script renvoie son JSON), SKILL.md, TUI (`act_meeting_report`, menu audio).
   low` ignoré (sortie tronquée, tout le budget part en raisonnement). Seul
   `reasoning_effort: none` le coupe (astuce Idonis, `moniteur/mandates.py`).
 - **Config unique** : langue auto **par tranche** de 600 s de parole (réunions
-  multilingues) ; réhaussement (`ENHANCE_CHAIN` = `SPEECH_ENHANCE_FILTERS` + loudnorm) du
-  micro et de l'audio simple — **pas des sorties système** (loopback numérique sans bruit ;
-  afftdn mono-cœur ≈ 40 % du temps total sur 2 vCPU pour rien) ; **AEC automatique** si `echo_coherence` micro↔sortie > 0.3 (casque ≈ 0.03) —
+  multilingues) ; **PAS de réhaussement par défaut** — banc A/B 2026-10-07 (5 min,
+  whisper-large-v3 OVH) : micro casque −5 % de mots (phrase entière perdue, mot inventé),
+  téléphone en salle +1 % seulement ; le réhaussement remonte aussi le souffle.
+  `--enhance` (dossier DAG `Audio/À réhausser/`, menu TUI) applique `ENHANCE_CHAIN`
+  (`SPEECH_ENHANCE_FILTERS` + loudnorm) au micro / à l'audio simple et produit
+  `_enhanced.m4a` ; **jamais aux sorties système** (loopback numérique ; afftdn
+  mono-cœur = l'étape la plus lente, 45 min vues sur 1 h 45 en 2 vCPU) ; **AEC automatique** si `echo_coherence` micro↔sortie > 0.3 (casque ≈ 0.03) —
   AEC sur le BRUT (filtre linéaire), en streaming par blocs ; **blancs retirés** (VAD
   énergie relatif sur le brut, le dynaudnorm remontant le bruit) puis timestamps
   restaurés via `TimeMap`.
@@ -475,7 +479,8 @@ le script renvoie son JSON), SKILL.md, TUI (`act_meeting_report`, menu audio).
   Banc du 2026-10-07 (même extrait) : Qwen3.8-27B (none) le plus fidèle + correctif ;
   Mistral-Small / Llama-3.3-70B fidèles mais corrigent peu ; gpt-oss-120b condense.
 - **Sorties** `Traité/<AAAA-MM-JJ - Sujet>` : `_original.<ext>` (+ `.channels.json`),
-  `_enhanced.m4a` (stéréo G=Moi / D=autres, 16 kHz), `.srt`, `_brut.md`, `.md` (front-matter
+  `_enhanced.m4a` (`--enhance` seulement ; stéréo G=Moi / D=autres, 16 kHz), `.srt`,
+  `_brut.md`, `.md` (front-matter
   **OKF** `type: meeting-transcript` : langues, durée, parole, canaux, locuteurs, coûts…).
   Sujet = titre du nom de fichier s'il n'est pas générique (« capture »…), sinon l'IA.
   **L'original est déplacé EN DERNIER** (un échec avant le laisse en place → retraitable).

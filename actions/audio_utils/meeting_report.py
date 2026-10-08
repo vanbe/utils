@@ -8,8 +8,10 @@ meeting_report.py — compte rendu de réunion de bout en bout, inférence DISTA
 
 Configuration unique (« one fits all ») :
   • langue auto (détectée PAR TRANCHE de ~10 min de parole → réunions multilingues) ;
-  • réhaussement (highpass + débruitage + dynaudnorm + loudnorm) du micro et de l'audio
-    simple ; les sorties système (loopback numérique, sans bruit) restent brutes ;
+  • PAS de réhaussement par défaut : banc A/B 2026-10-07, il dégrade l'audio propre
+    (micro casque : −5 % de mots, phrase entière perdue, mot inventé) pour un gain
+    marginal sur un téléphone en salle (+1 %). `--enhance` (dossier « À réhausser »
+    du DAG) l'applique au micro / à l'audio simple — jamais aux sorties système ;
   • anti-écho AUTOMATIQUE (seulement si le micro recapte les haut-parleurs) ;
   • blancs retirés avant envoi (coût ≈ durée de parole), timestamps restaurés ;
   • FLAC multicanal + channels.json : « Moi » = micro (attribution exacte), sorties
@@ -18,7 +20,7 @@ Configuration unique (« one fits all ») :
 Sorties dans <done-dir> (défaut : <dossier de l'audio>/Traité), base
 « AAAA-MM-JJ - Sujet » :
   <base>_original.<ext> (+ <base>_original.channels.json)  ← l'audio source, déplacé
-  <base>_enhanced.m4a      audio réhaussé à réécouter (stéréo G=Moi / D=autres)
+  <base>_enhanced.m4a      (--enhance seulement) audio réhaussé à réécouter (stéréo G=Moi / D=autres)
   <base>.srt / <base>_brut.md   transcription brute (vérification)
   <base>.md                front-matter OKF + compte rendu + transcript rédigé
 
@@ -157,7 +159,8 @@ def _fmt_duration(s: float) -> str:
 
 
 def run(path: str, done_dir: str | None = None, self_name: str | None = None,
-        language: str | None = None, no_llm: bool = False, keep_tmp: bool = False) -> dict:
+        language: str | None = None, no_llm: bool = False, keep_tmp: bool = False,
+        enhance: bool = False) -> dict:
     path = os.path.abspath(path)
     src_dir, fname = os.path.split(path)
     stem, ext = os.path.splitext(fname)
@@ -206,14 +209,13 @@ def run(path: str, done_dir: str | None = None, self_name: str | None = None,
         # 3. Réhaussement + 4. retrait des blancs + 5. transcription
         enh, segs = {}, []
         for s in sources:
-            enh[s['index']] = os.path.join(tmp, f'enh{s["index"]}.wav')
-            if s['kind'] == 'output':
-                # Sortie système = copie NUMÉRIQUE de ce qui est joué (loopback) : ni bruit de
-                # pièce ni distance → le débruitage n'apporte rien et coûte ~40 % du temps
-                # total sur 2 vCPU (afftdn mono-cœur). Whisper normalise déjà le niveau.
-                enh[s['index']] = raws[s['index']]
-            else:
+            # Sortie système = copie NUMÉRIQUE de ce qui est joué (loopback) : jamais réhaussée
+            # (rien à débruiter ; afftdn mono-cœur = l'étape la plus lente sur 2 vCPU).
+            if enhance and s['kind'] != 'output':
+                enh[s['index']] = os.path.join(tmp, f'enh{s["index"]}.wav')
                 ma.enhance(raws[s['index']], enh[s['index']])
+            else:
+                enh[s['index']] = raws[s['index']]
             regions = ma.speech_regions(ma.read_wav(raws[s['index']]))
             speech = sum(e - b for b, e in regions)
             log(f'source {s["label"] or "audio"} : {speech / 60:.1f} min de parole '
@@ -305,7 +307,9 @@ def run(path: str, done_dir: str | None = None, self_name: str | None = None,
         left = [enh[s['index']] for s in sources if s['kind'] == 'input']
         right = [enh[s['index']] for s in sources if s['kind'] != 'input']
         m4a = os.path.join(tmp, base + '_enhanced.m4a')
-        if left and right:
+        if not enhance:
+            pass                                  # sans réhaussement : l'original suffit
+        elif left and right:
             ma.mix_wavs(left, os.path.join(tmp, 'L.wav'))
             ma.mix_wavs(right, os.path.join(tmp, 'R.wav'))
             ma.write_listening_m4a(m4a, os.path.join(tmp, 'L.wav'), os.path.join(tmp, 'R.wav'))
@@ -335,13 +339,14 @@ def run(path: str, done_dir: str | None = None, self_name: str | None = None,
                 'asr_route': f'{_env_or_dotenv("ASR_MODEL") or "asr"} via LiteLLM ; diarisation OVH direct',
                 'llm_summary': None if no_llm else ml._model('summary'),
                 'llm_rewrite': None if no_llm else ml._model('rewrite'),
-                'enhance': 'micro/audio simple (sorties système : brutes)',
+                'enhance': enhance,
                 'silence_removed': True,
                 'aec': aec_applied, 'echo_coherence': (round(echo_score, 3)
                                                        if echo_score is not None else None)},
             'cost_eur': {'asr': round(stats['asr_cost'], 4), 'llm': round(usage.cost, 4),
                          'total': round(cost_total, 4)},
-            'files': {'original': f'./{base}_original{ext}', 'enhanced': f'./{base}_enhanced.m4a',
+            'files': {'original': f'./{base}_original{ext}',
+                      'enhanced': f'./{base}_enhanced.m4a' if enhance else None,
                       'raw_srt': f'./{base}.srt', 'raw_md': f'./{base}_brut.md'},
             'generated': {'actor': 'utils/meeting_report.py',
                           'timestamp': datetime.now(timezone.utc).isoformat(timespec='seconds')},
@@ -367,7 +372,7 @@ def run(path: str, done_dir: str | None = None, self_name: str | None = None,
 
         # 8. Livraison : sorties d'abord, l'original EN DERNIER (s'il échoue avant, rien
         #    n'est déplacé → le prochain passage retraite proprement).
-        for suffix in ('.srt', '_brut.md', '_enhanced.m4a', '.md'):
+        for suffix in ('.srt', '_brut.md', '.md') + (('_enhanced.m4a',) if enhance else ()):
             shutil.copyfile(os.path.join(tmp, base + suffix),
                             os.path.join(done_dir, base + suffix))
         side = os.path.splitext(path)[0] + '.channels.json'
@@ -398,10 +403,12 @@ def main() -> int:
     p.add_argument('--language', help='forcer la langue (défaut : détection par tranche)')
     p.add_argument('--no-llm', action='store_true', help='transcription seule, sans IA')
     p.add_argument('--keep-tmp', action='store_true', help='garder les fichiers de travail')
+    p.add_argument('--enhance', action='store_true',
+                   help='réhausser (débruitage + normalisation) : audio capté de loin / bruyant')
     a = p.parse_args()
     try:
         res = run(' '.join(a.input_file), a.done_dir, a.self_name, a.language,
-                  a.no_llm, a.keep_tmp)
+                  a.no_llm, a.keep_tmp, a.enhance)
     except Exception as e:                                   # noqa: BLE001 — JSON pour l'appelant
         res = {'status': 'error', 'message': f'{type(e).__name__}: {e}'}
     print(json.dumps(res, ensure_ascii=False))

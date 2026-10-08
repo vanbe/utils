@@ -674,13 +674,20 @@ def act_meeting_report(path: str):
     ./Traité/« AAAA-MM-JJ - Sujet ». ⚠ DÉPLACE l'audio source (→ _original)."""
     name = os.path.basename(path)
     print(f'\n  {bold("Meeting report")}  {dim(name)}\n')
+    enh_idx = select_menu([
+        ('Non — audio tel quel',            'défaut (casque, visio, téléphone correct)'),
+        ('Oui — réhausser (loin / bruyant)', 'débruitage + normalisation, + _enhanced.m4a'),
+    ], title='Réhaussement audio')
+    if enh_idx is None: return
     if not confirm([('File', name),
+                    ('Réhaussement', 'oui' if enh_idx == 1 else 'non'),
                     ('Inference', 'OVH AI Endpoints (EU) via LiteLLM — audio envoyé hors machine'),
-                    ('Output', 'Traité/AAAA-MM-JJ - Sujet.md (+ _enhanced.m4a, .srt, _brut.md)'),
+                    ('Output', 'Traité/AAAA-MM-JJ - Sujet.md (+ .srt, _brut.md)'),
                     ('Source', 'déplacée dans Traité/ (renommée _original)')]):
         return
     print()
-    proc = subprocess.run([_PYTHON, _REGISTRY['meeting-report']['script'], path],
+    proc = subprocess.run([_PYTHON, _REGISTRY['meeting-report']['script'], path]
+                          + (['--enhance'] if enh_idx == 1 else []),
                           stdout=subprocess.PIPE, text=True)
     try:
         res = json.loads(proc.stdout.strip().splitlines()[-1])
