@@ -152,6 +152,52 @@ def _yaml(v) -> str:
     return json.dumps(str(v), ensure_ascii=False)
 
 
+_GENERIC_LABEL = ('moi', 'systeme', 'speaker', 'inconnu')   # comparés SANS accents (_fold)
+
+
+def _names_for_title(participants: list, self_name: str | None, subject: str) -> str:
+    """Prénoms des AUTRES participants identifiés (ni « Moi »/soi, ni étiquettes génériques),
+    omis s'ils figurent déjà dans le sujet (« MDO Next - Laurent et Gerald »). ≤ 3 + « +N »."""
+    fold = ml._fold
+    names = [p for p in participants
+             if not fold(p).startswith(_GENERIC_LABEL)
+             and not (self_name and fold(p) == fold(self_name))]
+    if names and all(fold(n) in fold(subject) for n in names):
+        return ''
+    return ', '.join(names[:3]) + (f' +{len(names) - 3}' if len(names) > 3 else '')
+
+
+def _report_html(subject: str, dt, duration: float, participants: list, analysis: dict,
+                 report_md: str | None) -> str:
+    """Compte rendu en HTML pour le CORPS du mail (pandoc gfm → html, styles en ligne pour les
+    clients mail). Sans pandoc (laptop) : texte préformaté."""
+    import html
+    import subprocess
+    body = ''
+    if report_md:
+        try:
+            body = subprocess.run(['pandoc', '-f', 'gfm', '-t', 'html'], input=report_md,
+                                  capture_output=True, text=True, check=True).stdout
+        except (OSError, subprocess.CalledProcessError):
+            body = f'<pre style="white-space:pre-wrap">{html.escape(report_md)}</pre>'
+    meta = [f'{dt:%d/%m/%Y %H:%M}', _fmt_duration(duration), ', '.join(participants)]
+    if analysis.get('meeting_type'):
+        meta.append(analysis['meeting_type'])
+    desc = (f'<p style="color:#555;font-style:italic;margin:0 0 12px">'
+            f'{html.escape(analysis["description"])}</p>' if analysis.get('description') else '')
+    css = ('<style>body{font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#222;'
+           'line-height:1.45;max-width:860px}h3{font-size:15px;margin:18px 0 6px;color:#1a4d80;'
+           'border-bottom:1px solid #dde5ee;padding-bottom:3px}table{border-collapse:collapse;'
+           'margin:6px 0}th,td{border:1px solid #ccd;padding:4px 8px;vertical-align:top;'
+           'text-align:left}th{background:#eef3f8}ul{margin:4px 0 8px 18px;padding:0}'
+           'li{margin:2px 0}</style>')
+    return (f'<html><head><meta charset="utf-8">{css}</head><body>'
+            f'<h2 style="font-size:18px;margin:0 0 4px">{html.escape(subject)}</h2>'
+            f'<p style="color:#666;margin:0 0 8px">{html.escape(" · ".join(meta))}</p>{desc}'
+            f'{body}<p style="color:#999;font-size:12px;margin-top:20px">Pièces jointes : transcript '
+            f'rédigé (.md) et transcription brute (_brut.md).</p></body></html>')
+
+
 def _fmt_duration(s: float) -> str:
     s = int(round(s))
     h, m = divmod(s // 60, 60)
@@ -294,13 +340,20 @@ def run(path: str, done_dir: str | None = None, self_name: str | None = None,
 
         subject = title_hint or analysis.get('subject') or 'Réunion'
         subject = subject[:1].upper() + subject[1:]
-        os.makedirs(done_dir, exist_ok=True)
-        base = _unique_base(done_dir, ma.safe_filename(f'{dt:%Y-%m-%d} - {subject}'), ext)
-
-        # 7. Fichiers de sortie (dans tmp, puis copiés)
         names = {l: (analysis['speakers'].get(l) or l) for l in labels}
         participants = list(dict.fromkeys(names[l] for l in labels
                                           if l not in (analysis.get('minor_labels') or [])))
+        # « AAAA-MM-JJ - HHhMM - Participants - Sujet » (fichiers ; « HH:MM » dans le sujet du mail,
+        # « : » étant interdit dans un nom de fichier SMB/Windows)
+        who = _names_for_title(participants, self_name, subject)
+        has_time = (dt.hour, dt.minute) != (0, 0)
+        parts = [f'{dt:%Y-%m-%d}'] + ([f'{dt:%Hh%M}'] if has_time else []) + ([who] if who else [])
+        os.makedirs(done_dir, exist_ok=True)
+        base = _unique_base(done_dir, ma.safe_filename(' - '.join(parts + [subject]), 150), ext)
+        email_subject = ' - '.join([f'{dt:%Y-%m-%d}'] + ([f'{dt:%H:%M}'] if has_time else [])
+                                   + ([who] if who else []) + [subject])
+
+        # 7. Fichiers de sortie (dans tmp, puis copiés)
         write_srt(os.path.join(tmp, base + '.srt'), segs)
         write_md(os.path.join(tmp, base + '_brut.md'), segs, title=f'{subject} — transcription brute')
 
@@ -387,7 +440,11 @@ def run(path: str, done_dir: str | None = None, self_name: str | None = None,
                 'meeting_type': analysis.get('meeting_type'),
                 'description': analysis.get('description'),
                 'duration_sec': int(round(duration)), 'cost_eur': round(cost_total, 4),
-                'languages': sorted(stats['languages']), 'participants': participants}
+                'languages': sorted(stats['languages']), 'participants': participants,
+                'email_subject': email_subject,
+                'attachments': [base + '.md', base + '_brut.md'],
+                'report_html': _report_html(subject, dt, duration, participants, analysis,
+                                            report_md)}
     finally:
         if keep_tmp:
             log(f'fichiers de travail conservés : {tmp}')

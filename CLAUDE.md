@@ -479,11 +479,14 @@ le script renvoie son JSON), SKILL.md, TUI (`act_meeting_report`, menu audio).
   fin BRUTE de la tranche précédente comme contexte. > 300 k car. → map-reduce (notes).
   Banc du 2026-10-07 (même extrait) : Qwen3.8-27B (none) le plus fidèle + correctif ;
   Mistral-Small / Llama-3.3-70B fidèles mais corrigent peu ; gpt-oss-120b condense.
-- **Sorties** `Traité/<AAAA-MM-JJ - Sujet>` : `_original.<ext>` (+ `.channels.json`),
+- **Sorties** `Traité/<AAAA-MM-JJ - HHhMM - Participants - Sujet>` (heure omise si inconnue ; participants = autres personnes IDENTIFIÉES, sans soi ni « Système/Speaker », omis s'ils sont déjà dans le sujet, ≤ 3 + « +N ») : `_original.<ext>` (+ `.channels.json`),
   `_enhanced.m4a` (`--enhance` seulement ; stéréo G=Moi / D=autres, 16 kHz), `.srt`,
   `_brut.md`, `.md` (front-matter
   **OKF** `type: meeting-transcript` : langues, durée, parole, canaux, locuteurs, coûts…).
   Sujet = titre du nom de fichier s'il n'est pas générique (« capture »…), sinon l'IA.
+  Le JSON résultat porte aussi `email_subject` (même schéma, « HH:MM »), `attachments`
+  (`.md` rédigé + `_brut.md`) et `report_html` (compte rendu via pandoc, styles en ligne)
+  pour le mail HTML du DAG.
   **L'original est déplacé EN DERNIER** (un échec avant le laisse en place → retraitable).
 - **Coût mesuré** : 10 min de réunion 2 canaux ≈ 0,026 € (ASR ≈ 90 %).
 
