@@ -444,10 +444,11 @@ Câblé : `_REGISTRY['meeting-report']` (`json_result: True` — nom de sortie d
 le script renvoie son JSON), SKILL.md, TUI (`act_meeting_report`, menu audio).
 
 - **Passerelle** : appels OpenAI-compatibles **stdlib seule** (urllib) vers le LiteLLM
-  perso (`INFERENCE_BASE_URL`/`INFERENCE_API_KEY`) par **alias de rôle** : `asr`,
-  `meeting-summary` (gpt-oss-120b, reasoning low), `meeting-rewrite` (Qwen3.8-27B,
-  `reasoning_effort: none`). Changer de modèle / router vers un nœud GPU local = config
-  LiteLLM, jamais le code. Overrides `.env` : `ASR_MODEL`, `MEETING_SUMMARY_MODEL`,
+  perso (`INFERENCE_BASE_URL`/`INFERENCE_API_KEY`) par **alias d'usage** : `asr`
+  (→ `whisper-large-v3-eu`), `meeting-summary` et `meeting-rewrite` (→
+  `qwen3.8-27b-noreason-eu`). Les alias pointent vers des groupes génériques (`-eu` =
+  fournisseurs UE seulement, réunions = RGPD) — cf. `infra/documentation/apps/litellm.md`.
+  Changer de modèle / router vers un nœud GPU local = config LiteLLM, jamais le code. Overrides `.env` : `ASR_MODEL`, `MEETING_SUMMARY_MODEL`,
   `MEETING_REWRITE_MODEL`, `MEETING_SELF_NAME`, `MEETING_REPORT_LANGUAGE`.
 - ⚠ **Diarisation = OVH DIRECT** (`OVH_AI_API_KEY`) : l'endpoint OpenAI de LiteLLM
   re-modélise la réponse et **perd le champ `diarization`** ; le pass-through avec clé
