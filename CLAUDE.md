@@ -502,6 +502,17 @@ le script renvoie son JSON), SKILL.md, TUI (`act_meeting_report`, menu audio).
   fin BRUTE de la tranche précédente comme contexte. > 300 k car. → map-reduce (notes).
   Banc du 2026-10-07 (même extrait) : Qwen3.8-27B (none) le plus fidèle + correctif ;
   Mistral-Small / Llama-3.3-70B fidèles mais corrigent peu ; gpt-oss-120b condense.
+- **Réunions à plusieurs sujets** (`meeting_llm.segment_topics` / `report_by_topics`,
+  2026-10-08) : (1) le LLM découpe (sujets + heure de début de chaque passage, JSON) ;
+  le CODE range les répliques, rattache les passages < 3 min (`MIN_TOPIC_SEC`) au
+  voisin, refuse > 8 sujets ; (2) un appel JSON **par sujet** (parallèle, sur ses seules
+  répliques) → points / décisions / actions / points ouverts ; (3) synthèse globale
+  écrite depuis les fiches ; (4) tableau **« Actions par sujet » assemblé par le code**.
+  Transcript rédigé : intertitre `### n. Titre` à chaque changement de sujet ; OKF
+  `topics: [{title, start, end}]` (positions `h:mm` dans l'enregistrement). Un seul
+  sujet, transcript > 300 k car. ou réponse inexploitable → compte rendu classique
+  (`report`). Coût ≈ +0,01 €/réunion. Banc : comité d'archi du 06/10 = 3 sujets de
+  l'ordre du jour retrouvés exactement.
 - **Sorties** `Traité/<AAAA-MM-JJ - HHhMM - Participants - Sujet>` (heure omise si inconnue ; participants = autres personnes IDENTIFIÉES, sans soi ni « Système/Speaker », omis s'ils sont déjà dans le sujet, ≤ 3 + « +N ») : `_original.<ext>` (+ `.channels.json`),
   `_enhanced.m4a` (`--enhance` seulement ; stéréo G=Moi / D=autres, 16 kHz), `.srt`,
   `_brut.md`, `.md` (front-matter

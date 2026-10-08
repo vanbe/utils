@@ -319,6 +319,7 @@ def run(path: str, done_dir: str | None = None, self_name: str | None = None,
         usage = ml.Usage()
         lines = ml.transcript_lines(segs)
         if no_llm:
+            topics = []
             analysis = {'meeting_type': None, 'subject': title_hint or 'Réunion',
                         'description': None, 'speakers': {l: None for l in labels},
                         'tags': []}
@@ -334,9 +335,19 @@ def run(path: str, done_dir: str | None = None, self_name: str | None = None,
                                   dt=dt, self_in_labels='Moi' in labels)
             analysis['minor_labels'] = [l for l in minor if not analysis['speakers'].get(l)]
             log(f'analyse : {analysis["meeting_type"]} — {analysis.get("subject")!r}')
-            report_md = ml.report(lines, analysis, usage, dt)
+            # Plusieurs sujets distincts → compte rendu structuré par sujet (synthèse globale,
+            # fiche par sujet, actions par sujet) ; un seul → compte rendu classique.
+            seg = ml.segment_topics(lines, analysis, usage)
+            if seg:
+                topics = [{'title': t['title'], 'start': ml._hm(t['start']), 'end': ml._hm(t['end'])}
+                          for t in seg['topics']]
+                log(f'{len(topics)} sujets : ' + ' · '.join(t['title'] for t in topics))
+                report_md = ml.report_by_topics(lines, seg, analysis, usage, dt)
+            else:
+                log('un seul sujet')
+                report_md = ml.report(lines, analysis, usage, dt)
             log('compte rendu rédigé')
-            rewritten = ml.rewrite(lines, analysis, usage)
+            rewritten = ml.rewrite(lines, analysis, usage, seg=seg)
             log(f'transcript rédigé ({len(rewritten)} caractères)')
 
         subject = title_hint or analysis.get('subject') or 'Réunion'
@@ -387,6 +398,7 @@ def run(path: str, done_dir: str | None = None, self_name: str | None = None,
             'sources': [{'label': s['label'] or 'audio', 'kind': s['kind']} for s in sources],
             'speaker_count': len(participants),
             'speakers': names,
+            'topics': topics,
             'source_kind': 'multichannel' if kind == 'multichannel' else 'single',
             'processing': {
                 'asr': 'whisper-large-v3 (OVH AI Endpoints)',

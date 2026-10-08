@@ -127,11 +127,14 @@ def transcribe(audio_path: str, language: str | None = None, diarize: bool = Fal
 
 
 def chat(messages: list, model: str, max_tokens: int = 4000, temperature: float = 0.2,
-         timeout: int = 600) -> tuple[str, float, dict]:
-    """Chat completion via la passerelle → (texte, coût €, usage)."""
+         timeout: int = 600, json_mode: bool = False) -> tuple[str, float, dict]:
+    """Chat completion via la passerelle → (texte, coût €, usage). json_mode : JSON garanti."""
     base, key = gateway()
-    body = json.dumps({'model': model, 'messages': messages, 'max_tokens': max_tokens,
-                       'temperature': temperature}).encode('utf-8')
+    payload = {'model': model, 'messages': messages, 'max_tokens': max_tokens,
+               'temperature': temperature}
+    if json_mode:
+        payload['response_format'] = {'type': 'json_object'}
+    body = json.dumps(payload).encode('utf-8')
     data, headers = _request(f'{base}/chat/completions', key, body,
                              'application/json', timeout)
     try:
