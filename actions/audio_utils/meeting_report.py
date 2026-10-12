@@ -338,6 +338,7 @@ def run(path: str, done_dir: str | None = None, self_name: str | None = None,
             # Plusieurs sujets distincts → compte rendu structuré par sujet (synthèse globale,
             # fiche par sujet, actions par sujet) ; un seul → compte rendu classique.
             seg = ml.segment_topics(lines, analysis, usage)
+            topics = []                     # un seul sujet → liste vide (OKF `topics: []`)
             if seg:
                 topics = [{'title': t['title'], 'start': ml._hm(t['start']), 'end': ml._hm(t['end'])}
                           for t in seg['topics']]
