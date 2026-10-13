@@ -46,6 +46,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import inference_client as ic                                     # noqa: E402
 import meeting_audio as ma                                        # noqa: E402
 import meeting_llm as ml                                          # noqa: E402
+import lecture_llm as la                                          # noqa: E402
 from whisper_common import (_env_or_dotenv, channel_labels, is_hallucination,  # noqa: E402
                             is_echo_duplicate, _norm_phrase, write_srt, write_md)
 
@@ -207,7 +208,15 @@ def _fmt_duration(s: float) -> str:
 
 def run(path: str, done_dir: str | None = None, self_name: str | None = None,
         language: str | None = None, no_llm: bool = False, keep_tmp: bool = False,
-        enhance: bool = False) -> dict:
+        enhance: bool = False, mode: str = 'meeting', catalog: list | None = None) -> dict:
+    """mode='lecture' : cours / conférence (langue `en` par défaut, professeur = locuteur
+    dominant, sections typées dont les pauses EXCLUES, notes de cours, classement par cours
+    via `catalog` — cf. lecture_llm)."""
+    lecture = mode == 'lecture'
+    if lecture:
+        language = language or 'en'
+        catalog = catalog if catalog is not None else json.loads(
+            _env_or_dotenv('MEETING_COURSE_CATALOG') or '[]')
     path = os.path.abspath(path)
     src_dir, fname = os.path.split(path)
     stem, ext = os.path.splitext(fname)
@@ -290,8 +299,28 @@ def run(path: str, done_dir: str | None = None, self_name: str | None = None,
                 numbering[key] = sum(1 for k in numbering if k[0] == s['index']) + 1
             n = numbering[key]
             g['label'] = (f'{s["label"]} · S{n}' if s['label'] else f'Speaker {n}')
+        if lecture:
+            # Cours : dans chaque requête de diarisation, le locuteur DOMINANT est le
+            # professeur (numéros incohérents d'une requête à l'autre → par partie) ; les
+            # autres sont des participants. Un micro (« Moi ») garde son libellé.
+            by_part = {}
+            for g in segs:
+                if g['source']['kind'] != 'input':
+                    k = (g['source']['index'], g.get('part'))
+                    by_part.setdefault(k, {}).setdefault(g['label'], 0)
+                    by_part[k][g['label']] += len(g['text'])
+            prof = {k: max(v, key=v.get) for k, v in by_part.items() if v}
+            others = {}
+            for g in sorted(segs, key=lambda r: r['start']):
+                if g['source']['kind'] == 'input':
+                    continue
+                k = (g['source']['index'], g.get('part'))
+                if g['label'] == prof.get(k):
+                    g['label'] = 'Professor'
+                else:
+                    g['label'] = others.setdefault((k, g['label']), f'Participant {len(others) + 1}')
         # Un seul intervenant distant → pas de suffixe
-        for s in sources:
+        for s in ([] if lecture else sources):
             ks = [k for k in numbering if k[0] == s['index']]
             if len(ks) == 1 and s['label']:
                 for g in segs:
@@ -318,13 +347,39 @@ def run(path: str, done_dir: str | None = None, self_name: str | None = None,
         # 6. LLM : analyse, compte rendu, transcript rédigé
         usage = ml.Usage()
         lines = ml.transcript_lines(segs)
-        if no_llm:
+        sections_meta, excluded_s = [], 0
+        if lecture and not no_llm:
+            analysis = la.analyze(lines, usage, title_hint=title_hint, file_name=fname,
+                                  catalog=catalog, dt=dt)
+            prof_name = analysis.get('professor')
+            analysis['speakers'] = {l: (prof_name if l == 'Professor' and prof_name else
+                                        (self_name if l == 'Moi' else None)) for l in labels}
+            analysis['minor_labels'] = []
+            log(f"cours : {analysis.get('course') or 'non classé'} — {analysis.get('subject')!r}"
+                f"{' — prof. ' + prof_name if prof_name else ''}")
+            seg = la.segment(lines, analysis, usage) or la.whole_as_one(lines, analysis)
+            for t in seg['topics']:
+                if t['kind'] == 'break':        # jusqu'à la section suivante (silences retirés)
+                    excluded_s += max(0, t['next_start'] - t['start'])
+                sections_meta.append({'title': t['title'], 'kind': t['kind'],
+                                      'start': ml._hm(t['start']),
+                                      'end': ml._hm(t['next_start'] if t['kind'] == 'break'
+                                                    else t['end'])})
+            log(f"{len(seg['topics'])} sections dont "
+                f"{sum(1 for t in seg['topics'] if t['kind'] == 'break')} pause(s) exclue(s) "
+                f"({excluded_s // 60} min)")
+            report_md = la.report(lines, seg, analysis, usage, dt)
+            log('notes de cours rédigées')
+            rewritten = ml.rewrite(lines, analysis, usage, seg=seg)
+            log(f'transcript rédigé ({len(rewritten)} caractères)')
+            topics = sections_meta
+        elif no_llm:
             topics = []
             analysis = {'meeting_type': None, 'subject': title_hint or 'Réunion',
                         'description': None, 'speakers': {l: None for l in labels},
                         'tags': []}
             report_md, rewritten = None, None
-        else:
+        elif not lecture:
             # Étiquettes diarisées très marginales (< 2 % du texte) : souvent des fragments
             # d'un locuteur principal → signalées au LLM (rattachement si évident).
             chars = {l: sum(len(r['text']) for r in segs if r['label'] == l) for l in labels}
@@ -359,6 +414,10 @@ def run(path: str, done_dir: str | None = None, self_name: str | None = None,
         # « AAAA-MM-JJ - HHhMM - Participants - Sujet » (fichiers ; « HH:MM » dans le sujet du mail,
         # « : » étant interdit dans un nom de fichier SMB/Windows)
         who = _names_for_title(participants, self_name, subject)
+        if lecture:                          # cours : code du cours au lieu des participants
+            who = (la._CODE_RE.findall(analysis.get('course') or '') or [''])[0].upper()
+            if who and who in subject.upper():   # code déjà dans le titre donné par l'utilisateur
+                who = ''
         has_time = (dt.hour, dt.minute) != (0, 0)
         parts = [f'{dt:%Y-%m-%d}'] + ([f'{dt:%Hh%M}'] if has_time else []) + ([who] if who else [])
         os.makedirs(done_dir, exist_ok=True)
@@ -385,7 +444,7 @@ def run(path: str, done_dir: str | None = None, self_name: str | None = None,
 
         cost_total = stats['asr_cost'] + usage.cost
         fm = {
-            'type': 'meeting-transcript',
+            'type': 'lecture-notes' if lecture else 'meeting-transcript',
             'title': subject,
             'description': analysis.get('description'),
             'timestamp': dt.astimezone().isoformat(timespec='seconds'),
@@ -400,6 +459,8 @@ def run(path: str, done_dir: str | None = None, self_name: str | None = None,
             'speaker_count': len(participants),
             'speakers': names,
             'topics': topics,
+            **({'course': analysis.get('course'), 'professor': analysis.get('professor'),
+                'breaks_excluded_min': excluded_s // 60} if lecture else {}),
             'source_kind': 'multichannel' if kind == 'multichannel' else 'single',
             'processing': {
                 'asr': 'whisper-large-v3 (OVH AI Endpoints)',
@@ -428,7 +489,8 @@ def run(path: str, done_dir: str | None = None, self_name: str | None = None,
             meta.append(f'**Type** : {analysis["meeting_type"]}')
         body.append(' · '.join(meta) + '\n')
         if report_md:
-            body.append('## Compte rendu\n\n' + report_md.strip() + '\n')
+            body.append(('## Notes de cours' if lecture else '## Compte rendu') + '\n\n'
+                        + report_md.strip() + '\n')
         if rewritten:
             body.append('## Transcript rédigé\n\n' + rewritten.strip() + '\n')
         else:
@@ -452,6 +514,7 @@ def run(path: str, done_dir: str | None = None, self_name: str | None = None,
         return {'status': 'ok', 'final_md': os.path.join(done_dir, base + '.md'),
                 'base': base, 'done_dir': done_dir, 'subject': subject,
                 'meeting_type': analysis.get('meeting_type'),
+                'mode': mode, 'course': analysis.get('course') if lecture else None,
                 'description': analysis.get('description'),
                 'duration_sec': int(round(duration)), 'cost_eur': round(cost_total, 4),
                 'languages': sorted(stats['languages']), 'participants': participants,
@@ -474,12 +537,14 @@ def main() -> int:
     p.add_argument('--language', help='forcer la langue (défaut : détection par tranche)')
     p.add_argument('--no-llm', action='store_true', help='transcription seule, sans IA')
     p.add_argument('--keep-tmp', action='store_true', help='garder les fichiers de travail')
+    p.add_argument('--kind', choices=['meeting', 'lecture'], default='meeting',
+                   help='lecture = cours/conférence (catalogue des cours : MEETING_COURSE_CATALOG)')
     p.add_argument('--enhance', action='store_true',
                    help='réhausser (débruitage + normalisation) : audio capté de loin / bruyant')
     a = p.parse_args()
     try:
         res = run(' '.join(a.input_file), a.done_dir, a.self_name, a.language,
-                  a.no_llm, a.keep_tmp, a.enhance)
+                  a.no_llm, a.keep_tmp, a.enhance, a.kind)
     except Exception as e:                                   # noqa: BLE001 — JSON pour l'appelant
         res = {'status': 'error', 'message': f'{type(e).__name__}: {e}'}
     print(json.dumps(res, ensure_ascii=False))

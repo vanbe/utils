@@ -494,13 +494,21 @@ def report_by_topics(lines: list, seg: dict, analysis: dict, usage: Usage, dt) -
 def rewrite(lines: list, analysis: dict, usage: Usage, workers: int = 3,
             seg: dict | None = None) -> str:
     # Blocs = passages contigus d'un même sujet (intertitre « ### n. Titre ») ; sinon un seul.
+    # Bloc de type « break » (cours : micro resté ouvert en pause) → NI réécrit NI envoyé au
+    # LLM : remplacé par une mention de sa plage horaire.
     blocks = []
     if seg:
-        titles = {t['num']: t['title'] for t in seg['topics']}
+        tmap = {t['num']: t for t in seg['topics']}
         lt, i0 = seg['line_topic'], 0
         for i in range(1, len(lines) + 1):
             if i == len(lines) or lt[i] != lt[i0]:
-                blocks.append((f"### {lt[i0]}. {titles[lt[i0]]}", lines[i0:i]))
+                t = tmap[lt[i0]]
+                if t.get('kind') == 'break':
+                    end = t.get('next_start', _line_ts(lines[i - 1]))
+                    blocks.append((f"_[Break / off-topic — excluded "
+                                   f"({_hm(_line_ts(lines[i0]))}–{_hm(end)})]_", []))
+                else:
+                    blocks.append((f"### {lt[i0]}. {t['title']}", lines[i0:i]))
                 i0 = i
     else:
         blocks = [(None, lines)]
@@ -541,12 +549,12 @@ def rewrite(lines: list, analysis: dict, usage: Usage, workers: int = 3,
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
         outs = list(ex.map(one, range(len(parts))))
-    out, cur = [], None
+    by_block = {}
     for (b, _), o in zip(tasks, outs):
-        if b != cur:
-            cur = b
-            if blocks[b][0]:
-                out.append(blocks[b][0])
-        if o.strip():
-            out.append(o.strip())
+        by_block.setdefault(b, []).append(o.strip())
+    out = []
+    for b, (head, _) in enumerate(blocks):
+        if head:
+            out.append(head)
+        out += [o for o in by_block.get(b, []) if o]
     return '\n\n'.join(out)

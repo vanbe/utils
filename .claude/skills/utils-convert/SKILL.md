@@ -116,6 +116,9 @@ For in-place actions (raw-to-jpg, heic-to-jpg, thumbnails) there is no single ou
   `meeting_type`, `cost_eur`, `participants` (output name is chosen by the AI: no fixed suffix).
 - No audio enhancement by default (it hurt clean headset audio in an A/B test); run the script
   directly with `--enhance` for far-field / noisy recordings (adds `<base>_enhanced.m4a`).
+- `--kind lecture` (run the script directly) = course / conference notes in English instead of a
+  meeting report: breaks and off-topic chatter excluded, professor identified, course matched
+  against `MEETING_COURSE_CATALOG`. Combine with `--enhance` for in-room recordings.
 - A multichannel FLAC from *Record audio* (with `<name>.channels.json`) gets exact Moi/Système
   attribution; any other audio is diarised (`Speaker N`).
 - Needs `INFERENCE_BASE_URL` / `INFERENCE_API_KEY` (LiteLLM gateway) and `OVH_AI_API_KEY`

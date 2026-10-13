@@ -523,6 +523,24 @@ le script renvoie son JSON), SKILL.md, TUI (`act_meeting_report`, menu audio).
   pour le mail HTML du DAG.
   **L'original est déplacé EN DERNIER** (un échec avant le laisse en place → retraitable).
 - **Coût mesuré** : 10 min de réunion 2 canaux ≈ 0,026 € (ASR ≈ 90 %).
+- **Mode COURS** (`--kind lecture`, `lecture_llm.py`, DAG `vanbe_emba_courses`, 2026-10-13) :
+  langue `en` par défaut ; **réhaussement recommandé** (banc A/B sur un enregistrement EMBA
+  en salle : +7 mots / 5 min, phrases entières et noms récupérés — contrairement au casque) ;
+  **professeur = locuteur dominant de chaque requête de diarisation** (« Professor », nommé
+  seulement si le LLM donne un nom PRÉSENT dans le texte), autres « Participant n » ;
+  l'heuristique « soi = dernier locuteur anonyme » des réunions est **désactivée** (elle
+  aurait nommé le professeur Charles). Découpage en **sections typées** `course | qa |
+  logistics | break` par **fenêtres de 120 k car.** (cours de 4 h+), fusion des sections
+  homonymes aux frontières, sections < 5 min rattachées (sauf les pauses, toujours gardées
+  séparées). **`break` = micro resté ouvert / bavardages → exclus** des notes ET du transcript
+  rédigé (`meeting_llm.rewrite` ne les envoie même pas au LLM : simple mention de la plage).
+  Notes (`lecture_llm.report`, en `MEETING_REPORT_LANGUAGE`, défaut English) : Overview,
+  objectifs, Key takeaways, Outline (pauses signalées), par section points / modèles / cas /
+  références / concepts / Q&A, tableau devoirs, **glossaire assemblé par le code**. Cours
+  identifié dans `MEETING_COURSE_CATALOG` (JSON, le DAG le construit depuis les dossiers
+  `Drive EMBA/EMBA-2527-…`) : code `EMBA-xxxx-xxx` du nom de fichier d'abord, sinon choix du
+  LLM **validé contre le catalogue**. OKF `type: lecture-notes`, `course`, `professor`,
+  `breaks_excluded_min`, `topics[].kind` ; nom `AAAA-MM-JJ - HHhMM - <code> - <sujet>`.
 
 ---
 
