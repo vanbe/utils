@@ -176,11 +176,36 @@ def main():
 
     index = build_index(args.roots, base=base, excluded=args.exclude,
                         workers=args.workers, previous=previous)
-    with open(out, 'w', encoding='utf-8') as f:
-        json.dump(index, f, ensure_ascii=False, indent=1)
+    _write_index_atomic(out, index)
     print(f"{index['count']} image(s) indexée(s), {index['hashed_new']} (re)hashée(s) "
           f"→ {out}")
 
+
+
+def _write_index_atomic(out: str, index: dict, attempts: int = 6, delay: float = 10.0):
+    """Écrit l'index dans un fichier temporaire du même dossier puis le substitue à l'ancien
+    (os.replace). Jamais d'index tronqué ; et sur un partage CIFS, un fichier verrouillé par un
+    autre client (Cloud Sync qui le lit pour l'envoyer, explorateur…) → EBUSY/EACCES passager :
+    on réessaie (incident photo_dedup_index du 2026-10-14 : « [Errno 16] Device or resource
+    busy » sur open(out, 'w'))."""
+    import errno
+    import time
+    tmp = f"{out}.tmp-{os.getpid()}"
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(index, f, ensure_ascii=False, indent=1)
+    for i in range(attempts):
+        try:
+            os.replace(tmp, out)
+            return
+        except OSError as e:
+            if e.errno not in (errno.EBUSY, errno.EACCES, errno.EPERM) or i == attempts - 1:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+                raise
+            print(f"index verrouillé ({e.strerror}), nouvel essai dans {delay:.0f} s…")
+            time.sleep(delay)
 
 if __name__ == '__main__':
     main()
