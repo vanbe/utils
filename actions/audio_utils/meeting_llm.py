@@ -545,7 +545,20 @@ def rewrite(lines: list, analysis: dict, usage: Usage, workers: int = 3,
                    f"{prev}\n" if prev else '')
                 + "\nExtrait à réécrire :\n" + '\n'.join(parts[i]))
         n_in = sum(len(l) for l in parts[i])
-        return _chat(usage, 'rewrite', system, user, max(1500, min(8000, n_in // 2)))
+        budget = max(1500, min(8000, n_in // 2))
+        # Réponse tronquée (boucle de répétition du modèle — cours EMBA de 9 h, 2026-10-15 :
+        # un seul extrait faisait échouer 45 min de traitement) : 2e essai à budget double,
+        # puis repli sur la transcription brute de l'extrait, signalée.
+        for mt in (budget, budget * 2):
+            try:
+                return _chat(usage, 'rewrite', system, user, mt)
+            except ic.InferenceError as ex:
+                if 'tronquée' not in str(ex):
+                    raise
+                print(f'  réécriture tronquée (extrait {i + 1}/{len(parts)}, max_tokens={mt})',
+                      flush=True)
+        return ('_[Réécriture indisponible pour ce passage — transcription brute]_\n\n'
+                + '\n\n'.join(parts[i]))
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
         outs = list(ex.map(one, range(len(parts))))
