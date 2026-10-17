@@ -17,6 +17,9 @@ Usage:
   python transcribe_to_md.py <audio> [--keep-srt] [transcribe_audio.py options…]
   (e.g. --language en|fr|auto, --model large|turbo|…, --no-speaker,
    --max-speakers N, --no-improve, --enhance)
+
+Defaults from the environment or the utils .env: TRANSCRIBE_MODEL (when no
+--model is given) and TRANSCRIBE_GPU (nvidia-smi index of the GPU to use).
 """
 
 import os
@@ -37,19 +40,24 @@ def _base(path: str) -> str:
     return base
 
 
+def _setting(key: str):
+    """Environment first, then the utils .env."""
+    if key in os.environ:
+        return os.environ[key]
+    try:
+        from dotenv import dotenv_values
+        return dotenv_values(os.path.join(_HERE, '..', '..', '.env')).get(key)
+    except ImportError:
+        return None
+
+
 def _gpu_env() -> dict:
     """Pin the GPU from TRANSCRIBE_GPU (env or utils .env) = nvidia-smi index.
     CUDA's default order is fastest-first, which differs from nvidia-smi's on
     multi-GPU machines → force PCI bus order. A CUDA_VISIBLE_DEVICES already set
     by the caller wins; unset key → CUDA default (unchanged behaviour)."""
     env = dict(os.environ)
-    gpu = env.get('TRANSCRIBE_GPU')
-    if gpu is None:
-        try:
-            from dotenv import dotenv_values
-            gpu = dotenv_values(os.path.join(_HERE, '..', '..', '.env')).get('TRANSCRIBE_GPU')
-        except ImportError:
-            pass
+    gpu = _setting('TRANSCRIBE_GPU')
     if gpu not in (None, '') and 'CUDA_VISIBLE_DEVICES' not in env:
         env['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
         env['CUDA_VISIBLE_DEVICES'] = str(gpu)
@@ -104,6 +112,9 @@ def main():
     if '--output-format' in opts:            # we always need srt (timings)
         i = opts.index('--output-format')
         del opts[i:i + 2]
+    model = _setting('TRANSCRIBE_MODEL')       # recommended offline model (setup_env.py)
+    if '--model' not in opts and model:
+        opts += ['--model', model]
 
     base = _base(src)
     srt, md = base + '_transcription.srt', base + '_transcription.md'

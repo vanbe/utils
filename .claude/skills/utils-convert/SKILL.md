@@ -133,7 +133,7 @@ These outputs keep exact locations so notes can cite them:
   heading); inner headings start at `###`; images → `[image: alt]`.
 - **`audio-transcribe`** — `[hh:mm:ss] **Speaker N**: …` paragraphs (consecutive
   segments of one speaker merged, stamped with the start time). Default language
-  `en`, model `large`; pass `--language fr|auto`, `--model turbo`, `--max-speakers N`,
+  `en`, model = `TRANSCRIBE_MODEL` from the utils `.env` (else `large`); pass `--language fr|auto`, `--model turbo`, `--max-speakers N`,
   `--no-speaker`, `--enhance`, `--no-improve`. Intermediate `.srt` / WAV are
   removed (`--keep-srt` keeps the SRT). Runs locally on the GPU (several minutes
   per hour of audio); unlike `meeting-report` nothing leaves the machine and the
