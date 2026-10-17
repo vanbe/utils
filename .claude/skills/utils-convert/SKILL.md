@@ -50,6 +50,14 @@ python3 "$UTILS_RUN" <file> <action> --out-dir <dir> [script opts...]
   (e.g. `audio-transcribe … --model turbo --max-speakers 2`).
 - Folder actions (`--folder`) do not take `--out-dir`.
 
+### `to-md` — default Markdown conversion
+`python3 "$UTILS_RUN" <file> to-md [--out-dir <dir>]` picks the default
+`*-to-md` action for the extension (`_TO_MD` in `utils_run.py`): `.pdf` →
+`pdf-extract`, `.docx/.doc` → `doc-to-md`, `.pptx/.ppt` → `ppt-to-md`,
+`.xlsx/.xlsm/.xls` → `xls-to-md`, `.epub` → `epub-to-md`, audio/video →
+`audio-transcribe`. Success JSON adds `"action": "<resolved action>"`. Use the
+explicit action for heavier alternatives (`pdf-mineru`, `pdf-vision-ocr`).
+
 ## All available actions
 
 | Action           | Input             | Output                 | Backend               |
@@ -130,6 +138,9 @@ These outputs keep exact locations so notes can cite them:
   removed (`--keep-srt` keeps the SRT). Runs locally on the GPU (several minutes
   per hour of audio); unlike `meeting-report` nothing leaves the machine and the
   source is not moved. Diarization needs `AUDIO_UTILS_HF_TOKEN` in `.env`.
+  GPU: `TRANSCRIBE_GPU` in the utils `.env` (or the environment) = nvidia-smi
+  index, applied in PCI bus order (CUDA's default order differs on multi-GPU
+  machines); a `CUDA_VISIBLE_DEVICES` set by the caller wins.
 
 ## MD files need no conversion
 

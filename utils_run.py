@@ -53,6 +53,8 @@ Available actions:
     xls-to-md        .xlsx/.xlsm/.xls → Markdown  (openpyxl; tables + formulas)
     epub-to-md       .epub       → Markdown       (pandoc; one ## per chapter)
     audio-transcribe audio/video → <base>_transcription.md (Whisper + pyannote)
+    to-md            any of the above → the default *-to-md action for the
+                     extension (see _TO_MD); the JSON adds "action": <resolved>
 
 Example — extract all PDFs in a folder to Markdown:
     for f in /path/to/folder/*.pdf; do
@@ -189,6 +191,19 @@ _REGISTRY: dict[str, dict] = {
 # Source of truth for these scripts: both this CLI and the TUI read it here, so a
 # script path can't drift in one place and break the other.
 # Each entry: slug → {script, output (lambda(dir)->path|None), desc}.
+# Default "→ Markdown" action per extension, used by the `to-md` pseudo-action so
+# callers don't each keep their own table. Heavier alternatives (pdf-mineru,
+# pdf-vision-ocr) stay explicit.
+_TO_MD: dict[str, str] = {
+    **{e: 'pdf-extract' for e in ('.pdf',)},
+    **{e: 'doc-to-md' for e in ('.docx', '.doc')},
+    **{e: 'ppt-to-md' for e in ('.pptx', '.ppt')},
+    **{e: 'xls-to-md' for e in ('.xlsx', '.xlsm', '.xls')},
+    **{e: 'epub-to-md' for e in ('.epub',)},
+    **{e: 'audio-transcribe' for e in _REGISTRY['audio-transcribe']['ext']},
+}
+
+
 _FOLDER_REGISTRY: dict[str, dict] = {
     'image-dedup': {
         'script': os.path.join(_PIC, 'image_dedup.py'),
@@ -220,7 +235,9 @@ _FOLDER_REGISTRY: dict[str, dict] = {
 
 def _actions_for(path: str) -> list[dict]:
     ext = os.path.splitext(path)[1].lower()
-    return [
+    default = ([{'action': 'to-md', 'desc': f'Default Markdown conversion (→ {_TO_MD[ext]})'}]
+               if ext in _TO_MD else [])
+    return default + [
         {'action': slug, 'desc': info['desc']}
         for slug, info in _REGISTRY.items()
         if ext in info['ext']
@@ -249,6 +266,16 @@ def _run(path: str, action: str, out_dir: str = None, opts: list = None) -> dict
 
     if not os.path.isfile(path):
         return {'status': 'error', 'message': f'File not found: {path}'}
+
+    if action == 'to-md':
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in _TO_MD:
+            return {'status': 'error',
+                    'message': f'No default Markdown action for {ext} files (to-md).'}
+        result = _run(path, _TO_MD[ext], out_dir, opts)
+        if result.get('status') == 'ok':
+            result['action'] = _TO_MD[ext]
+        return result
 
     if action not in _REGISTRY:
         return {

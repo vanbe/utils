@@ -37,6 +37,25 @@ def _base(path: str) -> str:
     return base
 
 
+def _gpu_env() -> dict:
+    """Pin the GPU from TRANSCRIBE_GPU (env or utils .env) = nvidia-smi index.
+    CUDA's default order is fastest-first, which differs from nvidia-smi's on
+    multi-GPU machines → force PCI bus order. A CUDA_VISIBLE_DEVICES already set
+    by the caller wins; unset key → CUDA default (unchanged behaviour)."""
+    env = dict(os.environ)
+    gpu = env.get('TRANSCRIBE_GPU')
+    if gpu is None:
+        try:
+            from dotenv import dotenv_values
+            gpu = dotenv_values(os.path.join(_HERE, '..', '..', '.env')).get('TRANSCRIBE_GPU')
+        except ImportError:
+            pass
+    if gpu not in (None, '') and 'CUDA_VISIBLE_DEVICES' not in env:
+        env['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
+        env['CUDA_VISIBLE_DEVICES'] = str(gpu)
+    return env
+
+
 def _hms(sec: float) -> str:
     sec = int(sec)
     return f'{sec // 3600:02d}:{sec % 3600 // 60:02d}:{sec % 60:02d}'
@@ -93,7 +112,7 @@ def main():
 
     cmd = [sys.executable, os.path.join(_HERE, 'transcribe_audio.py'), src,
            '--output-format', 'srt'] + opts
-    proc = subprocess.run(cmd)
+    proc = subprocess.run(cmd, env=_gpu_env())
     try:
         if proc.returncode != 0 or not os.path.isfile(srt):
             print(f'transcribe_audio.py failed (exit {proc.returncode})', file=sys.stderr)

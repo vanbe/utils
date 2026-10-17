@@ -71,6 +71,37 @@ class ConvertActions(unittest.TestCase):
         code, res = run(path, 'epub-to-md')
         self.assertEqual(res, {'status': 'ok', 'output_file': os.path.join(self.src, 'sample.md')})
 
+    def test_to_md_resolves_default_action(self):
+        path = self._copy('sample.xlsx')
+        code, res = run(path, 'to-md', '--out-dir', self.out)
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res['action'], 'xls-to-md')
+        self.assertEqual(res['output_file'], os.path.join(self.out, 'sample.md'))
+        code, listing = run(path)
+        self.assertEqual(listing[0]['action'], 'to-md')
+
+    def test_to_md_unknown_extension(self):
+        path = os.path.join(self.src, 'x.png')
+        open(path, 'wb').close()
+        code, res = run(path, 'to-md')
+        self.assertEqual(code, 1)
+        self.assertIn('No default Markdown action', res['message'])
+
+    def test_transcribe_gpu_env(self):
+        import transcribe_to_md as t
+        old = {k: os.environ.pop(k, None) for k in ('TRANSCRIBE_GPU', 'CUDA_VISIBLE_DEVICES')}
+        try:
+            os.environ['TRANSCRIBE_GPU'] = '0'
+            env = t._gpu_env()
+            self.assertEqual((env['CUDA_DEVICE_ORDER'], env['CUDA_VISIBLE_DEVICES']), ('PCI_BUS_ID', '0'))
+            os.environ['CUDA_VISIBLE_DEVICES'] = '1'          # caller's choice wins
+            self.assertEqual(t._gpu_env()['CUDA_VISIBLE_DEVICES'], '1')
+        finally:
+            for k, v in old.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+
     def test_out_dir_refuses_different_file_with_same_name(self):
         path = self._copy('sample.epub')
         os.makedirs(self.out)
