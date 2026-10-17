@@ -8,7 +8,13 @@ stdout carries only the final JSON result.
 
 Usage:
     utils_run.py <file>                       List available actions for <file>
-    utils_run.py <file> <action>              Run a file action on <file>
+    utils_run.py <file> <action> [--out-dir <dir>] [opts...]
+                                              Run a file action on <file>
+                                              --out-dir: write outputs (and any
+                                              side files) into <dir> instead of
+                                              beside the input, which is left
+                                              untouched; other opts are passed
+                                              through to the script
     utils_run.py --list-all                   List every registered file action
     utils_run.py --list-folders               List every folder action
     utils_run.py --folder <dir> <action> ..   Run a folder action on <dir>
@@ -43,6 +49,10 @@ Available actions:
     md-to-pdf        .md         → PDF            (pandoc + XeLaTeX)
     ppt-to-pdf       .pptx/.ppt  → PDF            (LibreOffice)
     xls-to-pdf       .xlsx/.xls  → PDF            (LibreOffice)
+    ppt-to-md        .pptx/.ppt  → Markdown       (python-pptx; slides + notes)
+    xls-to-md        .xlsx/.xlsm/.xls → Markdown  (openpyxl; tables + formulas)
+    epub-to-md       .epub       → Markdown       (pandoc; one ## per chapter)
+    audio-transcribe audio/video → <base>_transcription.md (Whisper + pyannote)
 
 Example — extract all PDFs in a folder to Markdown:
     for f in /path/to/folder/*.pdf; do
@@ -51,6 +61,7 @@ Example — extract all PDFs in a folder to Markdown:
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -147,6 +158,30 @@ _REGISTRY: dict[str, dict] = {
         'ext':    {'.xlsx', '.xls'},
         'desc':   'Convert spreadsheet to PDF (LibreOffice)',
     },
+    'ppt-to-md': {
+        'script': os.path.join(_DOC, 'ppt_to_md.py'),
+        'output': lambda p: _stem(p) + '.md',
+        'ext':    {'.pptx', '.ppt'},
+        'desc':   'PowerPoint → Markdown (<!-- slide N --> markers, tables, speaker notes)',
+    },
+    'xls-to-md': {
+        'script': os.path.join(_DOC, 'xls_to_md.py'),
+        'output': lambda p: _stem(p) + '.md',
+        'ext':    {'.xlsx', '.xlsm', '.xls'},
+        'desc':   'Spreadsheet → Markdown (one section per sheet, cell-addressed tables, formulas)',
+    },
+    'epub-to-md': {
+        'script': os.path.join(_DOC, 'epub_to_md.py'),
+        'output': lambda p: _stem(p) + '.md',
+        'ext':    {'.epub'},
+        'desc':   'EPUB → Markdown (pandoc; <!-- chapter N --> + ## heading per chapter)',
+    },
+    'audio-transcribe': {
+        'script': os.path.join(_AUD, 'transcribe_to_md.py'),
+        'output': lambda p: _stem(p) + '_transcription.md',
+        'ext':    {'.m4a', '.mp3', '.wav', '.mp4', '.mkv'},
+        'desc':   'Transcribe audio/video locally → Markdown with speakers + [hh:mm:ss] (Whisper + pyannote)',
+    },
 }
 
 
@@ -192,7 +227,24 @@ def _actions_for(path: str) -> list[dict]:
     ]
 
 
-def _run(path: str, action: str) -> dict:
+def _stage(path: str, out_dir: str):
+    """Expose <path> inside <out_dir> so scripts that write beside their input
+    write there instead. → (path to run on, staged link/copy to remove or None)."""
+    out_dir = os.path.abspath(out_dir)
+    os.makedirs(out_dir, exist_ok=True)
+    staged = os.path.join(out_dir, os.path.basename(path))
+    if os.path.lexists(staged):
+        if os.path.exists(staged) and os.path.samefile(staged, path):
+            return path if os.path.dirname(path) == out_dir else staged, None
+        raise FileExistsError(f'--out-dir already contains a different {os.path.basename(path)}: {staged}')
+    try:
+        os.symlink(path, staged)
+    except OSError:
+        shutil.copy2(path, staged)      # e.g. filesystem without symlinks
+    return staged, staged
+
+
+def _run(path: str, action: str, out_dir: str = None, opts: list = None) -> dict:
     path = os.path.abspath(path)
 
     if not os.path.isfile(path):
@@ -215,8 +267,22 @@ def _run(path: str, action: str) -> dict:
             ),
         }
 
+    staged = None
+    if out_dir:
+        try:
+            path, staged = _stage(path, out_dir)
+        except OSError as e:
+            return {'status': 'error', 'message': str(e)}
+    try:
+        return _exec(info, path, list(opts or []))
+    finally:
+        if staged and os.path.lexists(staged):
+            os.remove(staged)
+
+
+def _exec(info: dict, path: str, opts: list) -> dict:
     extra = info.get('extra', lambda p: [])(path)
-    cmd   = [_PYTHON, info['script'], path] + extra
+    cmd   = [_PYTHON, info['script'], path] + extra + opts
 
     if info.get('json_result'):
         # Le script imprime son propre JSON en dernière ligne de stdout (progression sur stderr).
@@ -317,8 +383,15 @@ def main():
         _emit(_actions_for(file_path))
         return
 
-    action = argv[1]
-    result = _run(file_path, action)
+    action, opts, out_dir = argv[1], argv[2:], None
+    if '--out-dir' in opts:
+        i = opts.index('--out-dir')
+        if i + 1 >= len(opts):
+            _emit({'status': 'error', 'message': '--out-dir needs a directory'})
+            sys.exit(2)
+        out_dir = opts[i + 1]
+        del opts[i:i + 2]
+    result = _run(file_path, action, out_dir, opts)
     _emit(result)
     sys.exit(0 if result.get('status') == 'ok' else 1)
 

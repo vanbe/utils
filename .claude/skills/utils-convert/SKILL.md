@@ -1,6 +1,6 @@
 ---
 name: utils-convert
-description: Convert or extract documents (PDF, DOCX, ODT, MD, PPT, XLS) using the utils_run.py CLI tool. Use when the user wants to extract text from PDFs, convert Word documents to Markdown, convert ODT to DOCX, batch-process CVs or job offers, or any other document format conversion. Trigger on phrases like "extract CVs", "convert to Markdown", "extraire les CVs", "convert all PDFs", "transform documents", "extraire toutes les offres".
+description: Convert or extract documents (PDF, DOCX, ODT, MD, PPT, XLS, EPUB) and transcribe audio using the utils_run.py CLI tool. Use when the user wants to extract text from PDFs, convert Word documents to Markdown, convert ODT to DOCX, batch-process CVs or job offers, or any other document format conversion. Trigger on phrases like "extract CVs", "convert to Markdown", "extraire les CVs", "convert all PDFs", "transform documents", "extraire toutes les offres".
 allowed-tools: Bash
 ---
 
@@ -36,6 +36,20 @@ Returns JSON:
 Exit code 0 = ok, 1 = error.
 Progress and logs from the underlying tool go to stderr — only JSON on stdout.
 
+### Options (any file action)
+```bash
+python3 "$UTILS_RUN" <file> <action> --out-dir <dir> [script opts...]
+```
+- `--out-dir <dir>` — write the output (and any side files: images folder,
+  temp WAVs…) into `<dir>` (created if needed) instead of beside the input. The
+  input folder is left untouched (the input is exposed in `<dir>` through a
+  temporary symlink, removed afterwards). `output_file` then points into `<dir>`.
+  Fails if `<dir>` already holds a *different* file with the input's name.
+  Use it for read-only / synced sources (e.g. Nextcloud).
+- Any other trailing options are passed through to the underlying script
+  (e.g. `audio-transcribe … --model turbo --max-speakers 2`).
+- Folder actions (`--folder`) do not take `--out-dir`.
+
 ## All available actions
 
 | Action           | Input             | Output                 | Backend               |
@@ -51,6 +65,10 @@ Progress and logs from the underlying tool go to stderr — only JSON on stdout.
 | `md-to-pdf`      | `.md`             | `<base>.pdf`           | pandoc + XeLaTeX      |
 | `ppt-to-pdf`     | `.pptx` / `.ppt`  | `<base>.pdf`           | LibreOffice           |
 | `xls-to-pdf`     | `.xlsx` / `.xls`  | `<base>.pdf`           | LibreOffice           |
+| `ppt-to-md`      | `.pptx` / `.ppt`  | `<base>.md`            | python-pptx (`.ppt` → `.pptx` via LibreOffice first) |
+| `xls-to-md`      | `.xlsx` / `.xlsm` / `.xls` | `<base>.md`   | openpyxl (`.xls` → `.xlsx` via LibreOffice first) |
+| `epub-to-md`     | `.epub`           | `<base>.md`            | pandoc, per spine document |
+| `audio-transcribe` | `.m4a` `.mp3` `.wav` `.mp4` `.mkv` | `<base>_transcription.md` | local faster-whisper + pyannote (GPU) |
 | `meeting-report` | audio (`.m4a` `.mp3` `.wav` `.flac` `.ogg` `.opus` `.aac` `.webm` `.mka`) | `Traité/AAAA-MM-JJ - Sujet.md` (+ `_original`, `.srt`, `_brut.md`) | OVH whisper-large-v3 + LLM via LiteLLM (no GPU) |
 
 ## Common patterns
@@ -84,6 +102,34 @@ fi
 - **`pdf-extract`** — fast, no GPU, best for text-based PDFs with embedded text
 - **`pdf-mineru`** — slower, best for scanned docs, complex layouts, tables, formulas
 - **`pdf-vision-ocr`** — requires Ollama running; best for scanned/handwritten content
+
+## Locator-preserving Markdown (ppt / xls / epub / audio)
+
+These outputs keep exact locations so notes can cite them:
+
+- **`ppt-to-md`** — per slide, in deck order: `<!-- slide N -->` then
+  `## Slide N — <title>` (`(untitled)` if none, `(hidden)` for hidden slides);
+  body text in reading order with bullet levels; tables as pipe tables; charts
+  as a small data table; slides with pictures but no text → `[image-only slide]`
+  (no content at all → `[empty slide]`); other pictures → `*[n image(s) on slide]*`.
+  Speaker notes in a delimited block:
+  `<!-- notes slide N -->` / `**Speaker notes:**` / … / `<!-- /notes -->`.
+- **`xls-to-md`** — per sheet, workbook order: `<!-- sheet N: <name> -->` +
+  `## Sheet N — <name>` (`(hidden)` flagged). The used range as a table whose
+  header is the column letters and first column the row number (cite `B7`);
+  values are the results cached in the file. Then `### Formulas`:
+  `` - `B4`: `=B2-B3` → 40 ``. Merged ranges listed. Script options
+  `--max-rows N` / `--max-formulas N` (default 2000 per sheet, truncation noted).
+- **`epub-to-md`** — `# <book title>`, then per spine document with text:
+  `<!-- chapter N -->` + `## <title>` (title from the book's TOC, else its first
+  heading); inner headings start at `###`; images → `[image: alt]`.
+- **`audio-transcribe`** — `[hh:mm:ss] **Speaker N**: …` paragraphs (consecutive
+  segments of one speaker merged, stamped with the start time). Default language
+  `en`, model `large`; pass `--language fr|auto`, `--model turbo`, `--max-speakers N`,
+  `--no-speaker`, `--enhance`, `--no-improve`. Intermediate `.srt` / WAV are
+  removed (`--keep-srt` keeps the SRT). Runs locally on the GPU (several minutes
+  per hour of audio); unlike `meeting-report` nothing leaves the machine and the
+  source is not moved. Diarization needs `AUDIO_UTILS_HF_TOKEN` in `.env`.
 
 ## MD files need no conversion
 
