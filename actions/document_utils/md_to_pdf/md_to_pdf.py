@@ -102,8 +102,19 @@ def main():
     temp_dir = tempfile.mkdtemp()
     
     # Handle Mermaid blocks
+    # The Windows launcher starts the TUI without ~/.local/bin on PATH, where a
+    # user-level mermaid-cli (and the node it runs on) usually lives.
+    mmdc_env = os.environ.copy()
+    local_bin = os.path.expanduser('~/.local/bin')
+    mmdc_env['PATH'] = os.pathsep.join([mmdc_env.get('PATH', ''), local_bin])
+    mmdc = shutil.which('mmdc', path=mmdc_env['PATH'])
+    if mmdc:
+        mmdc_env['PATH'] = os.pathsep.join([os.path.dirname(mmdc), mmdc_env['PATH']])
     mermaid_pattern = r'```mermaid\s*\n(.*?)\n```'
     matches = re.findall(mermaid_pattern, content, re.DOTALL)
+    if matches and not mmdc:
+        print("mmdc (mermaid-cli) not found: mermaid blocks stay as code. "
+              "Install it with: npm install -g @mermaid-js/mermaid-cli")
     for i, match in enumerate(matches):
         mermaid_file = os.path.join(temp_dir, f'mermaid_{i}.mmd')
         with open(mermaid_file, 'w', encoding='utf-8') as f:
@@ -111,11 +122,12 @@ def main():
 
         png_file = os.path.join(temp_dir, f'mermaid_{i}.png')
         try:
-            subprocess.run(['mmdc', '-i', mermaid_file, '-o', png_file], check=True)
+            subprocess.run([mmdc or 'mmdc', '-i', mermaid_file, '-o', png_file],
+                           check=True, env=mmdc_env)
             old_block = f'```mermaid\n{match}\n```'
             new_block = f'![Mermaid Diagram]({png_file})'
             content = content.replace(old_block, new_block, 1)
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, FileNotFoundError):
             print(f"Failed to generate image for mermaid block {i}")
             continue
 
