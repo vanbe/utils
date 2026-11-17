@@ -8,11 +8,17 @@ import shutil
 import pypandoc
 import argparse
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
 def generate_pdf(content, output_pdf, md_file_dir, temp_dir, title, template):
     latex_header = r'''
+        % Tables are emitted as raw LaTeX by tables.lua, so pandoc does not
+        % load these on its own.
+        \usepackage{longtable,booktabs,array,calc,colortbl}
         \usepackage{tcolorbox}
-        \tcbuselibrary{skins}
+        \tcbuselibrary{skins,breakable}
 
+        % Raw-LaTeX \begin{warning} box (kept for documents that use it).
         \newtcolorbox{warning}{
             enhanced,
             colback=yellow!10!white,
@@ -23,6 +29,27 @@ def generate_pdf(content, output_pdf, md_file_dir, temp_dir, title, template):
             boxed title style={colback=red!75!black},
             arc=4mm,
             boxshadow=0.5mm
+        }
+
+        % Callouts ("encarts") emitted by callouts.lua:
+        % \begin{callout}{<colour>}{<title>} ... \end{callout}
+        \definecolor{callout-note}{HTML}{0969DA}
+        \definecolor{callout-tip}{HTML}{1A7F37}
+        \definecolor{callout-important}{HTML}{8250DF}
+        \definecolor{callout-warning}{HTML}{BF8700}
+        \definecolor{callout-caution}{HTML}{CF222E}
+        \newtcolorbox{callout}[2]{
+            enhanced, breakable,
+            colback=#1!6!white,
+            colframe=#1,
+            boxrule=0pt, leftrule=3pt, arc=0pt, outer arc=0pt,
+            left=8pt, right=8pt, top=4pt, bottom=6pt,
+            colbacktitle=#1!14!white,
+            coltitle=#1!80!black,
+            fonttitle=\bfseries,
+            title={#2},
+            before upper={\setlength{\parskip}{5pt}},
+            before skip=10pt, after skip=10pt
         }
         '''
     if template == 'simple':
@@ -47,7 +74,11 @@ def generate_pdf(content, output_pdf, md_file_dir, temp_dir, title, template):
         '-V', 'mainfont=TeX Gyre Heros',
         '-V', 'sansfont=TeX Gyre Heros',
         '-V', 'monofont=Latin Modern Mono',
-        '-H', header_file
+        '-H', header_file,
+        # Content-based column widths + row rules (see tables.lua)
+        '--lua-filter', os.path.join(_HERE, 'tables.lua'),
+        # > [!NOTE] / ::: warning callouts as coloured boxes (see callouts.lua)
+        '--lua-filter', os.path.join(_HERE, 'callouts.lua'),
     ]
 
     if template == 'report':
@@ -131,15 +162,8 @@ def main():
             print(f"Failed to generate image for mermaid block {i}")
             continue
 
-    # Handle warn blocks by converting them to raw LaTeX
-    warn_pattern = r'(::: \s*warn(.*?) \s* :::)'
-    warn_matches = list(re.finditer(warn_pattern, content, re.DOTALL))
-    for match in warn_matches:
-        old_block = match.group(0)
-        inner_content = match.group(2).strip()
-        new_block = f'\\begin{{warning}}\n{inner_content}\n\\end{{warning}}'
-        content = content.replace(old_block, new_block, 1)
-    
+    # Callouts (::: warn, > [!NOTE]…) are handled by callouts.lua.
+
     # Extract the main title (H1) for report template
     title = ""
     if template == 'report':
